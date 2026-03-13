@@ -47,6 +47,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from ..agent_bridge import AgentBridge
+from ..channel_language import response_language_instruction, tr
 from ..gateway.routing import GatewaySessionRegistry, SessionKey
 from ..model_help import render_model_help
 
@@ -436,7 +437,7 @@ class QQRuntime:
         return t.strip()
 
     def _build_full_request(self, session: Any, text: str) -> str:
-        ctx_parts: List[str] = []
+        ctx_parts: List[str] = [f"[Response language]\n{response_language_instruction(text)}"]
         try:
             agents_md = session.get_agents_md()
             if agents_md:
@@ -523,7 +524,7 @@ class QQRuntime:
                 "You are OmicVerse Jarvis, a bioinformatics AI assistant.",
                 "The user is chatting with you while a background analysis is running.",
                 "Answer concisely. Do NOT execute code or call tools.",
-                "Reply in the same language the user uses.",
+                response_language_instruction(user_text),
             ]
             if running_request:
                 system_lines.append(f"\nCurrently running: {running_request[:300]}")
@@ -545,13 +546,26 @@ class QQRuntime:
                 {"role": "user", "content": user_text},
             ]
             response = await session.agent._llm.chat(messages, tools=None, tool_choice=None)
-            reply = (response.content or "").strip() or "正在分析，请稍候..."
+            reply = (response.content or "").strip() or tr(
+                user_text,
+                en="Analysis is still running. Please wait...",
+                zh="正在分析，请稍候...",
+            )
             for chunk in self._text_chunks(reply):
                 await asyncio.to_thread(self._send_text, target, chunk, msg_id)
         except Exception as exc:
             logger.warning("QQ quick_chat failed: %s", exc)
             try:
-                await asyncio.to_thread(self._send_text, target, "正在后台分析，请等待完成。", msg_id)
+                await asyncio.to_thread(
+                    self._send_text,
+                    target,
+                    tr(
+                        user_text,
+                        en="Background analysis is still running. Please wait.",
+                        zh="正在后台分析，请等待完成。",
+                    ),
+                    msg_id,
+                )
             except Exception:
                 pass
 
@@ -587,7 +601,7 @@ class QQRuntime:
         except Exception as exc:
             logger.exception("QQ analysis wrapper error")
             try:
-                await asyncio.to_thread(self._send_text, target, f"分析异常: {exc}", msg_id)
+                await asyncio.to_thread(self._send_text, target, f"Analysis failed: {exc}", msg_id)
             except Exception:
                 pass
         finally:
@@ -601,7 +615,7 @@ class QQRuntime:
                     # almost certainly expired (>5 min) by now. Proactive send or new msg_id
                     # from the queued message will be used in the next _dispatch.
                     await asyncio.to_thread(
-                        self._send_text, target, f"开始执行队列中的 {n} 条请求...", None
+                        self._send_text, target, f"Starting {n} queued request(s)...", None
                     )
                 except Exception:
                     pass
@@ -651,11 +665,21 @@ class QQRuntime:
         try:
             result = await bridge.run(full_request, session.adata)
         except asyncio.CancelledError:
-            await asyncio.to_thread(self._send_text, target, "已取消当前分析。", msg_id)
+            await asyncio.to_thread(
+                self._send_text,
+                target,
+                tr(user_text, en="Current analysis cancelled.", zh="已取消当前分析。"),
+                msg_id,
+            )
             raise
         except Exception as exc:
             logger.exception("QQ analysis failed")
-            await asyncio.to_thread(self._send_text, target, f"分析失败: {exc}", msg_id)
+            await asyncio.to_thread(
+                self._send_text,
+                target,
+                tr(user_text, en=f"Analysis failed: {exc}", zh=f"分析失败: {exc}"),
+                msg_id,
+            )
             return
 
         if result.adata is not None:
@@ -679,12 +703,24 @@ class QQRuntime:
             pass
 
         if result.error:
-            err_text = f"分析出错: {result.error}"
+            err_text = tr(
+                user_text,
+                en=f"Analysis error: {result.error}",
+                zh=f"分析出错: {result.error}",
+            )
             if result.diagnostics:
                 hints = "\n".join(f"- {x}" for x in result.diagnostics[:4])
-                err_text += f"\n\n诊断:\n{hints}"
+                err_text += tr(
+                    user_text,
+                    en=f"\n\nDiagnostics:\n{hints}",
+                    zh=f"\n\n诊断:\n{hints}",
+                )
             if llm_buf.strip():
-                err_text += f"\n\n模型输出:\n{_trim(llm_buf, 1200)}"
+                err_text += tr(
+                    user_text,
+                    en=f"\n\nModel output:\n{_trim(llm_buf, 1200)}",
+                    zh=f"\n\n模型输出:\n{_trim(llm_buf, 1200)}",
+                )
             # Use markdown for error detail (mirrors Feishu edit_card red)
             await asyncio.to_thread(self._send_markdown, target, err_text, msg_id)
             return
@@ -720,12 +756,20 @@ class QQRuntime:
                 summary = _trim(llm_buf, max_len=1800)
             elif result.diagnostics:
                 hints = "\n".join(f"- {x}" for x in result.diagnostics[:5])
-                summary = f"未生成有效答复\n{hints}"
+                summary = tr(
+                    user_text,
+                    en=f"No valid final answer was generated.\n{hints}",
+                    zh=f"未生成有效答复\n{hints}",
+                )
             elif session.adata is not None:
                 a = session.adata
-                summary = f"分析完成\n{a.n_obs:,} cells x {a.n_vars:,} genes"
+                summary = tr(
+                    user_text,
+                    en=f"Analysis complete\n{a.n_obs:,} cells x {a.n_vars:,} genes",
+                    zh=f"分析完成\n{a.n_obs:,} cells x {a.n_vars:,} genes",
+                )
             else:
-                summary = "分析完成"
+                summary = tr(user_text, en="Analysis complete", zh="分析完成")
         for chunk in self._text_chunks(summary, limit=_MAX_TEXT):
             await asyncio.to_thread(self._send_markdown, target, chunk, msg_id)
 
@@ -779,7 +823,16 @@ class QQRuntime:
             return
         if cmd == "/reset":
             session.reset()
-            await asyncio.to_thread(self._send_text, target, "会话已重置，kernel 将在下次请求时重建。", msg_id)
+            await asyncio.to_thread(
+                self._send_text,
+                target,
+                tr(
+                    text,
+                    en="Session reset. The kernel will be recreated on the next request.",
+                    zh="会话已重置，kernel 将在下次请求时重建。",
+                ),
+                msg_id,
+            )
             return
         if cmd == "/kernel":
             await self._handle_kernel(target, msg_id, session, route, tokens[1:])
@@ -824,7 +877,11 @@ class QQRuntime:
         # Ack before analysis
         if session.adata is not None:
             a = session.adata
-            ack = f"收到请求，开始分析...\n当前数据: {a.n_obs:,} cells x {a.n_vars:,} genes"
+            ack = tr(
+                text,
+                en=f"Request received. Starting analysis...\nCurrent data: {a.n_obs:,} cells x {a.n_vars:,} genes",
+                zh=f"收到请求，开始分析...\n当前数据: {a.n_obs:,} cells x {a.n_vars:,} genes",
+            )
         else:
             try:
                 h5ad_files = session.list_h5ad_files()
@@ -832,9 +889,21 @@ class QQRuntime:
                 h5ad_files = []
             if h5ad_files:
                 names = "  ".join(f.name for f in h5ad_files[:5])
-                ack = f"收到请求，开始分析...\n检测到文件: {names}\n使用 /load <文件名> 加载"
+                ack = tr(
+                    text,
+                    en=(
+                        "Request received. Starting analysis...\n"
+                        f"Detected files: {names}\n"
+                        "Use /load <filename> to load one."
+                    ),
+                    zh=f"收到请求，开始分析...\n检测到文件: {names}\n使用 /load <文件名> 加载",
+                )
             else:
-                ack = "收到请求，开始分析...\n未检测到数据，Agent 将自行加载"
+                ack = tr(
+                    text,
+                    en="Request received. Starting analysis...\nNo dataset detected. The agent will load data if needed.",
+                    zh="收到请求，开始分析...\n未检测到数据，Agent 将自行加载",
+                )
         await asyncio.to_thread(self._send_text, target, ack, msg_id)
 
         await self._spawn_analysis(target, msg_id, session, text)
@@ -845,30 +914,33 @@ class QQRuntime:
         self._pending.pop(route, None)
         running = self._tasks.get(route)
         if not running or running.task.done():
-            await asyncio.to_thread(self._send_text, target, "当前没有正在运行的分析。", msg_id)
+            await asyncio.to_thread(self._send_text, target, "No analysis is currently running.", msg_id)
             return
         running.task.cancel()
-        await asyncio.to_thread(self._send_text, target, "已发送取消信号。", msg_id)
+        await asyncio.to_thread(self._send_text, target, "Cancellation requested.", msg_id)
 
     async def _handle_help(self, target: QQTarget, msg_id: Optional[str]) -> None:
         text = (
             "OmicVerse Jarvis\n"
             "----------------\n"
-            "数据命令:\n"
-            "/workspace - 查看工作区\n"
-            "/ls [路径] - 列出文件\n"
-            "/find <模式> - 搜索文件\n"
-            "/load <文件名> - 加载数据\n"
-            "/shell <命令> - 执行白名单命令\n\n"
-            "会话命令:\n"
-            "/kernel | /kernel ls | /kernel new 名称 | /kernel use 名称\n"
-            "/memory - 分析历史\n"
-            "/usage - token 用量\n"
-            "/model [名称] - 查看/切换模型\n"
-            "/status - 当前状态\n"
-            "/save - 导出 current.h5ad\n"
-            "/cancel - 取消分析\n"
-            "/reset - 重置会话"
+            "Quick Start:\n"
+            "Send a natural-language request to start an analysis.\n"
+            "Upload or load a .h5ad file before asking dataset-specific questions.\n\n"
+            "Data Commands:\n"
+            "/workspace - Show the workspace\n"
+            "/ls [path] - List files\n"
+            "/find <pattern> - Search files\n"
+            "/load <filename> - Load data\n"
+            "/shell <command> - Run a whitelisted command\n\n"
+            "Session Commands:\n"
+            "/kernel | /kernel ls | /kernel new <name> | /kernel use <name>\n"
+            "/memory - Analysis history\n"
+            "/usage - Token usage\n"
+            "/model [name] - Show or switch model\n"
+            "/status - Current status\n"
+            "/save - Export current.h5ad\n"
+            "/cancel - Cancel analysis\n"
+            "/reset - Reset the session"
         )
         await asyncio.to_thread(self._send_text, target, text, msg_id)
 
@@ -884,7 +956,7 @@ class QQRuntime:
             except Exception:
                 pass
         else:
-            lines.append("暂无数据")
+            lines.append("No dataset loaded")
         try:
             kname = self._sm.get_active_kernel(session.user_id)
             lines.append(f"kernel: {kname}")
@@ -895,7 +967,7 @@ class QQRuntime:
             lines.append(f"prompts: {kst.get('prompt_count', 0)}/{kst.get('max_prompts', '?')}")
         running = self._tasks.get(route)
         if running and not running.task.done():
-            lines.append("分析中（可 /cancel）")
+            lines.append("Analysis running (/cancel available)")
         await asyncio.to_thread(self._send_text, target, "\n".join(lines), msg_id)
 
     async def _handle_workspace(self, target: QQTarget, msg_id: Optional[str], session: Any) -> None:

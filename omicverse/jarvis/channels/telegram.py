@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .. import _fmt
+from ..channel_language import tr
 from ..config import default_state_dir
 from ..gateway.routing import GatewaySessionRegistry, SessionKey
 from ..model_help import render_model_help
@@ -67,6 +68,710 @@ class AccessControl:
         return False
 
 
+<<<<<<< Updated upstream
+=======
+def telegram_route_from_update(update: Any) -> ConversationRoute:
+    chat = getattr(update, "effective_chat", None)
+    msg = getattr(update, "effective_message", None)
+    user = getattr(update, "effective_user", None)
+    scope_type = "dm" if (chat and chat.type == "private") else "group"
+    scope_id = str(chat.id if chat else getattr(user, "id", ""))
+    thread_id = getattr(msg, "message_thread_id", None) if msg is not None else None
+    return ConversationRoute(
+        channel="telegram",
+        scope_type=scope_type,
+        scope_id=scope_id,
+        thread_id=(str(thread_id) if thread_id else None),
+        sender_id=(str(user.id) if user else None),
+    )
+
+
+def _normalize_bot_username(username: Optional[str]) -> str:
+    return (username or "").lstrip("@").strip().lower()
+
+
+def _message_mentions_bot(message: Any, bot_username: Optional[str]) -> bool:
+    name = _normalize_bot_username(bot_username)
+    text = (getattr(message, "text", None) or "").strip()
+    if not name or not text:
+        return False
+
+    mention_token = f"@{name}"
+    if mention_token in text.lower():
+        return True
+
+    entities = list(getattr(message, "entities", None) or [])
+    for entity in entities:
+        entity_type = str(getattr(entity, "type", "")).lower()
+        if "mention" not in entity_type:
+            continue
+        offset = int(getattr(entity, "offset", 0) or 0)
+        length = int(getattr(entity, "length", 0) or 0)
+        token = text[offset : offset + length].strip().lower()
+        if token == mention_token:
+            return True
+    return False
+
+
+def _message_replies_to_bot(message: Any, bot_username: Optional[str]) -> bool:
+    reply = getattr(message, "reply_to_message", None)
+    if reply is None:
+        return False
+    from_user = getattr(reply, "from_user", None)
+    if from_user is None:
+        return False
+    if getattr(from_user, "is_bot", False):
+        name = _normalize_bot_username(bot_username)
+        reply_name = _normalize_bot_username(getattr(from_user, "username", None))
+        return not name or name == reply_name
+    return False
+
+
+def telegram_trigger_for_update(update: Any, bot_username: Optional[str]) -> Optional[str]:
+    route = telegram_route_from_update(update)
+    if route.is_direct:
+        return "direct"
+
+    message = getattr(update, "effective_message", None)
+    text = (getattr(message, "text", None) or "").strip()
+    if not text:
+        return None
+    if _message_mentions_bot(message, bot_username):
+        return "mention"
+    if _message_replies_to_bot(message, bot_username):
+        return "reply"
+    return None
+
+
+def _strip_leading_bot_mention(text: str, bot_username: Optional[str]) -> str:
+    name = _normalize_bot_username(bot_username)
+    if not name:
+        return text.strip()
+    pattern = rf"^\s*@{re.escape(name)}[\s,:-]*"
+    return re.sub(pattern, "", text.strip(), count=1, flags=re.IGNORECASE)
+
+
+def telegram_runtime_envelope(update: Any, bot_username: Optional[str]) -> Optional[MessageEnvelope]:
+    message = getattr(update, "effective_message", None)
+    user = getattr(update, "effective_user", None)
+    text = (getattr(message, "text", None) or "").strip()
+    if not text or user is None:
+        return None
+
+    route = telegram_route_from_update(update)
+    trigger = telegram_trigger_for_update(update, bot_username) or "implicit"
+    normalized = _strip_leading_bot_mention(text, bot_username) if trigger == "mention" else text
+    normalized = normalized.strip()
+    if not normalized:
+        return None
+
+    return MessageEnvelope(
+        route=route,
+        text=normalized,
+        sender_id=str(user.id),
+        sender_username=getattr(user, "username", None),
+        message_id=str(getattr(message, "message_id", "")) or None,
+        trigger=trigger,
+        explicit_trigger=(trigger != "implicit"),
+    )
+
+
+class TelegramRuntimePresenter:
+    _BORING = {"分析完成", "分析完成。", "task completed", "done", "完成"}
+    _ARTIFACT_EXTS = r"pdf|csv|tsv|txt|xlsx|html|json|h5ad|png|jpg|svg"
+    _DRAFT_MAX = 2800
+
+    def ack(self, envelope: MessageEnvelope, session: Any) -> List[DeliveryEvent]:
+        if session.adata is not None:
+            a = session.adata
+            text = _fmt.ack_message(
+                envelope.text,
+                adata_info=f"{a.n_obs:,} cells × {a.n_vars:,} genes",
+            )
+        else:
+            h5ad_files = session.list_h5ad_files()
+            if h5ad_files:
+                names = "\n".join(
+                    f"  • <code>{_fmt.esc(f.name)}</code>" for f in h5ad_files[:5]
+                )
+                hint = tr(
+                    envelope.text,
+                    en=(
+                        f"💡  Detected {len(h5ad_files)} file(s) in the workspace:\n"
+                        f"{names}\nUse <code>/load &lt;filename&gt;</code> to load one."
+                    ),
+                    zh=(
+                        f"💡  workspace 中检测到 {len(h5ad_files)} 个文件：\n"
+                        f"{names}\n使用 <code>/load &lt;文件名&gt;</code> 加载"
+                    ),
+                )
+            else:
+                hint = tr(
+                    envelope.text,
+                    en="💡  No loaded dataset detected. The agent will load data if needed.",
+                    zh="💡  未检测到已加载数据，Agent 将自行加载数据",
+                )
+            text = _fmt.ack_message(envelope.text, workspace_hint=hint)
+        return [
+            DeliveryEvent(
+                route=envelope.route,
+                kind="text",
+                text=text,
+                text_format="html",
+            )
+        ]
+
+    def queue_started(self, route: ConversationRoute, queued_count: int) -> List[DeliveryEvent]:
+        return [
+            DeliveryEvent(
+                route=route,
+                kind="text",
+                text=f"⏭  Starting {queued_count} queued request(s)...",
+                text_format="html",
+            )
+        ]
+
+    def draft_open(self, route: ConversationRoute) -> DeliveryEvent:
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            mode="open",
+            target="analysis-draft",
+            text="💭  <b>Thinking...</b>",
+            text_format="html",
+        )
+
+    def draft_update(self, route: ConversationRoute, llm_text: str, progress: str) -> DeliveryEvent:
+        body = _fmt.md_to_html(self._trim_for_draft(llm_text)) if llm_text.strip() else "<i>Thinking...</i>"
+        if progress:
+            text = f"🔄  <code>{_fmt.esc(progress[:180])}</code>\n\n💭  {body}"
+        else:
+            text = f"💭  {body}"
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            mode="edit",
+            target="analysis-draft",
+            text=text,
+            text_format="html",
+        )
+
+    def draft_cancelled(self, route: ConversationRoute) -> DeliveryEvent:
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            mode="edit",
+            target="analysis-draft",
+            text="🚫  Analysis cancelled.",
+            text_format="html",
+        )
+
+    def analysis_error(self, route: ConversationRoute, error_text: str) -> DeliveryEvent:
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            mode="edit",
+            target="analysis-draft",
+            text=_fmt.error_message(error_text),
+            text_format="html",
+        )
+
+    def typing(self, route: ConversationRoute) -> Optional[DeliveryEvent]:
+        return DeliveryEvent(route=route, kind="typing")
+
+    def quick_chat_reply(self, route: ConversationRoute, text: str) -> DeliveryEvent:
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            text=_fmt.md_to_html(text),
+            text_format="html",
+        )
+
+    def quick_chat_fallback(self, route: ConversationRoute, *, user_text: str = "") -> DeliveryEvent:
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            text=tr(
+                user_text,
+                en="⏳ Background analysis is still running. Please wait or use <code>/cancel</code>.",
+                zh="⏳ 后台分析进行中，请等待完成。使用 <code>/cancel</code> 取消。",
+            ),
+            text_format="html",
+        )
+
+    def analysis_status(
+        self,
+        route: ConversationRoute,
+        *,
+        has_media: bool,
+        has_reports: bool,
+        has_artifacts: bool,
+    ) -> Optional[DeliveryEvent]:
+        if has_media:
+            status = "✅  Sending images..."
+        elif has_reports:
+            status = "✅  Sending reports..."
+        elif has_artifacts:
+            status = "✅  Sending results..."
+        else:
+            return None
+        return DeliveryEvent(
+            route=route,
+            kind="text",
+            mode="edit",
+            target="analysis-draft",
+            text=status,
+            text_format="html",
+        )
+
+    def final_events(
+        self,
+        route: ConversationRoute,
+        *,
+        session: Any,
+        user_text: str,
+        llm_text: str,
+        result: Any,
+    ) -> List[DeliveryEvent]:
+        events: List[DeliveryEvent] = []
+
+        a_cur = result.adata or session.adata
+        a_info = f"{a_cur.n_obs:,} cells × {a_cur.n_vars:,} genes" if a_cur else ""
+
+        summary = self._strip_local_paths((result.summary or "").strip())
+        has_summary = bool(summary and summary.lower() not in self._BORING)
+        long_summary = has_summary and len(summary) > 1200
+        final_text = _fmt.md_to_html(summary) if has_summary and not long_summary else ""
+        if (not final_text) and a_info:
+            final_text = f"📊  <code>{_fmt.esc(a_info)}</code>"
+        if not final_text:
+            final_text = _fmt._DIV
+
+        has_media = bool(result.figures)
+        has_reports = bool(result.reports)
+        artifacts = list(getattr(result, "artifacts", []) or [])
+        has_artifacts = bool(artifacts)
+        is_complex = has_media or has_reports or has_artifacts or long_summary
+
+        if is_complex:
+            explain = summary if has_summary else self._strip_local_paths(llm_text.strip())
+            for i, rep in enumerate(result.reports or [], start=1):
+                header = (
+                    tr(user_text, en="📝  <b>Analysis Report</b>", zh="📝  <b>分析报告</b>")
+                    if i == 1 else
+                    tr(user_text, en=f"📝  <b>Analysis Report (cont. {i})</b>", zh=f"📝  <b>分析报告（续 {i}）</b>")
+                )
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="prose",
+                        text=rep,
+                        metadata={"header": header, "always_expand": False},
+                    )
+                )
+            n_figs = len(result.figures or [])
+            for i, png_bytes in enumerate(result.figures or [], start=1):
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="photo",
+                        binary=png_bytes,
+                        caption=_fmt.figure_caption(i, n_figs),
+                    )
+                )
+            for art in artifacts:
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="document",
+                        binary=art.data,
+                        filename=art.filename,
+                        caption=f"📎  {art.filename}",
+                    )
+                )
+
+            if explain:
+                if len(explain) > 1200:
+                    events.append(
+                        DeliveryEvent(
+                            route=route,
+                            kind="prose",
+                            text=explain,
+                            metadata={"always_expand": False},
+                        )
+                    )
+                    events.append(
+                        DeliveryEvent(
+                            route=route,
+                            kind="text",
+                            text=_fmt._DIV,
+                            text_format="html",
+                            controls=("save", "status", "memory"),
+                        )
+                    )
+                else:
+                    events.append(
+                        DeliveryEvent(
+                            route=route,
+                            kind="text",
+                            text=_fmt.md_to_html(explain),
+                            text_format="html",
+                            controls=("save", "status", "memory"),
+                        )
+                    )
+            else:
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="text",
+                        text=final_text,
+                        text_format="html",
+                        controls=("save", "status", "memory"),
+                    )
+                )
+            events.append(
+                DeliveryEvent(
+                    route=route,
+                    kind="text",
+                    mode="edit",
+                    target="analysis-draft",
+                    text=tr(user_text, en="✅  Analysis complete", zh="✅  分析完成"),
+                    text_format="html",
+                )
+            )
+            return events
+
+        if llm_text.strip():
+            final_html = _fmt.md_to_html(llm_text.strip())
+            if len(final_html) > 3200 or "<pre>" in final_html:
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="text",
+                        mode="edit",
+                        target="analysis-draft",
+                        text=tr(user_text, en="✅  Analysis complete. Full response below.", zh="✅  分析完成，正文如下。"),
+                        text_format="html",
+                    )
+                )
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="prose",
+                        text=llm_text.strip(),
+                        metadata={"always_expand": False},
+                    )
+                )
+            else:
+                events.append(
+                    DeliveryEvent(
+                        route=route,
+                        kind="text",
+                        mode="edit",
+                        target="analysis-draft",
+                        text=final_html,
+                        text_format="html",
+                        controls=("save", "status", "memory"),
+                    )
+                )
+                return events
+        else:
+            events.append(
+                DeliveryEvent(
+                    route=route,
+                    kind="text",
+                    mode="edit",
+                    target="analysis-draft",
+                    text=tr(user_text, en="✅  Analysis complete", zh="✅  分析完成"),
+                    text_format="html",
+                )
+            )
+
+        events.append(
+            DeliveryEvent(
+                route=route,
+                kind="text",
+                text=final_text,
+                text_format="html",
+                controls=("save", "status", "memory"),
+            )
+        )
+        return events
+
+    @classmethod
+    def _trim_for_draft(cls, text: str, max_len: int = _DRAFT_MAX) -> str:
+        if len(text) <= max_len:
+            return text
+        head = int(max_len * 0.55)
+        tail = max_len - head - 40
+        if tail < 200:
+            tail = 200
+        return (
+            text[:head].rstrip()
+            + "\n\n[...内容较长，已省略中间部分...]\n\n"
+            + text[-tail:].lstrip()
+        )
+
+    @classmethod
+    def _strip_local_paths(cls, text: str) -> str:
+        t = text or ""
+        t = re.sub(r'`[^`\n]*(?:/[^`\n]*){2,}`', '', t)
+        t = re.sub(r'/(?:Users|home|tmp|var|opt|root|data|mnt|private)/\S+', '', t)
+        t = re.sub(r'~[/\\]\S+', '', t)
+        t = re.sub(
+            rf'\.?/?(?:\w[\w/-]*/)+\w[\w.-]*\.(?:{cls._ARTIFACT_EXTS})',
+            '',
+            t,
+            flags=re.IGNORECASE,
+        )
+        t = re.sub(r'[ \t]{2,}', ' ', t)
+        t = re.sub(r'\n{3,}', '\n\n', t)
+        return t.strip()
+
+
+class TelegramDelivery:
+    def __init__(
+        self,
+        *,
+        bot: Any,
+        chat_lock_factory: Callable[[int], asyncio.Lock],
+        keyboard_factory: Callable[[Tuple[str, ...]], Any],
+    ) -> None:
+        self._bot = bot
+        self._chat_lock_factory = chat_lock_factory
+        self._keyboard_factory = keyboard_factory
+        self._targets: Dict[str, int] = {}
+
+    async def deliver(self, event: DeliveryEvent) -> None:
+        chat_id = int(event.route.scope_id)
+        thread_id = int(event.route.thread_id) if event.route.thread_id else None
+        if event.kind == "typing":
+            try:
+                kwargs = {"chat_id": chat_id, "action": "typing"}
+                if thread_id is not None:
+                    kwargs["message_thread_id"] = thread_id
+                await self._bot.send_chat_action(**kwargs)
+            except Exception:
+                pass
+            return
+
+        if event.kind == "prose":
+            async with self._chat_lock_factory(chat_id):
+                await _fmt.send_prose(
+                    self._bot,
+                    chat_id,
+                    event.text,
+                    header=str(event.metadata.get("header") or ""),
+                    always_expand=bool(event.metadata.get("always_expand")),
+                    message_thread_id=thread_id,
+                )
+            return
+
+        if event.kind == "photo":
+            async with self._chat_lock_factory(chat_id):
+                await self._send_photo_or_file(
+                    chat_id,
+                    event.binary or b"",
+                    event.caption,
+                    thread_id=thread_id,
+                )
+            return
+
+        if event.kind == "document":
+            async with self._chat_lock_factory(chat_id):
+                await self._send_document(
+                    chat_id,
+                    filename=event.filename or "artifact.bin",
+                    data=event.binary or b"",
+                    caption=event.caption,
+                    thread_id=thread_id,
+                )
+            return
+
+        if event.kind != "text":
+            return
+
+        reply_markup = self._keyboard_factory(event.controls) if event.controls else None
+        parse_mode = "HTML" if event.text_format == "html" else None
+        async with self._chat_lock_factory(chat_id):
+            if event.mode == "open":
+                msg_id = await self._send_text(
+                    chat_id,
+                    event.text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                    thread_id=thread_id,
+                )
+                if msg_id is not None and event.target:
+                    self._targets[self._target_key(event)] = msg_id
+                return
+
+            if event.mode == "edit":
+                target_id = self._targets.get(self._target_key(event))
+                if target_id is not None:
+                    ok = await self._edit_text(
+                        chat_id,
+                        target_id,
+                        event.text,
+                        parse_mode=parse_mode,
+                        reply_markup=reply_markup,
+                    )
+                    if ok:
+                        return
+                msg_id = await self._send_text(
+                    chat_id,
+                    event.text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup,
+                    thread_id=thread_id,
+                )
+                if msg_id is not None and event.target:
+                    self._targets[self._target_key(event)] = msg_id
+                return
+
+            await self._send_text(
+                chat_id,
+                event.text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                thread_id=thread_id,
+            )
+
+    @staticmethod
+    def _target_key(event: DeliveryEvent) -> str:
+        return f"{event.route.route_key()}::{event.target or ''}"
+
+    async def _send_text(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        parse_mode: Optional[str] = "HTML",
+        reply_markup: Any = None,
+        thread_id: Optional[int] = None,
+    ) -> Optional[int]:
+        try:
+            kwargs = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "reply_markup": reply_markup,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            message = await self._bot.send_message(**kwargs)
+            return getattr(message, "message_id", None)
+        except Exception:
+            pass
+        try:
+            kwargs = {
+                "chat_id": chat_id,
+                "text": self._strip_html(text),
+                "reply_markup": reply_markup,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            message = await self._bot.send_message(**kwargs)
+            return getattr(message, "message_id", None)
+        except Exception as exc:
+            logger.warning("Failed to send message: %s", exc)
+            return None
+
+    async def _edit_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        parse_mode: Optional[str] = "HTML",
+        reply_markup: Any = None,
+    ) -> bool:
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            if self._is_not_modified_error(exc):
+                return True
+            pass
+        try:
+            await self._bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=self._strip_html(text),
+                reply_markup=reply_markup,
+            )
+            return True
+        except Exception as exc:
+            if self._is_not_modified_error(exc):
+                return True
+            return False
+
+    async def _send_photo_or_file(
+        self,
+        chat_id: int,
+        png_bytes: bytes,
+        caption: str,
+        *,
+        thread_id: Optional[int] = None,
+    ) -> None:
+        try:
+            kwargs = {
+                "chat_id": chat_id,
+                "photo": BytesIO(png_bytes),
+                "caption": caption,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            await self._bot.send_photo(**kwargs)
+            return
+        except Exception:
+            pass
+        await self._send_document(
+            chat_id,
+            filename="figure.png",
+            data=png_bytes,
+            caption=caption,
+            thread_id=thread_id,
+        )
+
+    async def _send_document(
+        self,
+        chat_id: int,
+        *,
+        filename: str,
+        data: bytes,
+        caption: str,
+        thread_id: Optional[int] = None,
+    ) -> None:
+        try:
+            kwargs = {
+                "chat_id": chat_id,
+                "document": BytesIO(data),
+                "filename": filename,
+                "caption": caption,
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            await self._bot.send_document(**kwargs)
+        except Exception as exc:
+            logger.warning("Failed to send artifact %s: %s", filename, exc)
+
+    @staticmethod
+    def _strip_html(text: str) -> str:
+        return re.sub(r"<[^>]+>", "", text or "")
+
+    @staticmethod
+    def _is_not_modified_error(exc: Exception) -> bool:
+        return "message is not modified" in str(exc).strip().lower()
+
+
+>>>>>>> Stashed changes
 # ---------------------------------------------------------------------------
 # Bot builder
 # ---------------------------------------------------------------------------
@@ -586,33 +1291,64 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
     async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await _guard(update):
             return
-        text = (
-            "👋  <b>OmicVerse Jarvis</b>\n"
-            f"{_fmt._DIV}\n"
-            "移动端单细胞分析助手，支持中英文自然语言指令。\n\n"
-            "<b>快速开始</b>\n"
-            "1. 通过 <code>scp</code>/<code>sftp</code> 上传 .h5ad 到 workspace\n"
-            "2. <code>/workspace</code> 查看文件 → <code>/load</code> 加载\n"
-            "3. 直接发送分析需求，例如：\n"
-            "   <i>质控 nUMI&gt;500 mito&lt;0.2，然后标准化、UMAP</i>\n\n"
-            "<b>数据命令</b>\n"
-            "<code>/workspace</code>  查看 workspace\n"
-            "<code>/ls</code>         列出文件\n"
-            "<code>/find</code>       搜索文件\n"
-            "<code>/load</code>       加载数据\n"
-            "<code>/shell</code>      执行 shell 命令\n\n"
-            "<b>会话命令</b>\n"
-            "<code>/kernel</code>     当前 kernel 状态\n"
-            "<code>/kernel ls</code>  列出所有 kernel\n"
-            "<code>/kernel new x</code> 新建并切换 kernel\n"
-            "<code>/kernel use x</code> 切换 kernel\n"
-            "<code>/memory</code>     分析历史\n"
-            "<code>/usage</code>      token 用量\n"
-            "<code>/model</code>      切换模型\n"
-            "<code>/status</code>     数据状态\n"
-            "<code>/save</code>       下载 h5ad\n"
-            "<code>/cancel</code>     取消当前分析\n"
-            "<code>/reset</code>      重置会话\n"
+        text = tr(
+            getattr(update.message, "text", "") or "",
+            en=(
+                "👋  <b>OmicVerse Jarvis</b>\n"
+                f"{_fmt._DIV}\n"
+                "A mobile single-cell analysis assistant.\n\n"
+                "<b>Quick Start</b>\n"
+                "1. Upload a <code>.h5ad</code> file to the workspace via <code>scp</code> or <code>sftp</code>\n"
+                "2. Use <code>/workspace</code> and then <code>/load</code> to open it\n"
+                "3. Send a request such as:\n"
+                "   <i>Run QC with nUMI&gt;500 and mito&lt;0.2, then normalize and build UMAP</i>\n\n"
+                "<b>Data Commands</b>\n"
+                "<code>/workspace</code>  View workspace\n"
+                "<code>/ls</code>         List files\n"
+                "<code>/find</code>       Search files\n"
+                "<code>/load</code>       Load data\n"
+                "<code>/shell</code>      Run shell commands\n\n"
+                "<b>Session Commands</b>\n"
+                "<code>/kernel</code>     Current kernel status\n"
+                "<code>/kernel ls</code>  List kernels\n"
+                "<code>/kernel new x</code> Create and switch kernel\n"
+                "<code>/kernel use x</code> Switch kernel\n"
+                "<code>/memory</code>     Analysis history\n"
+                "<code>/usage</code>      Token usage\n"
+                "<code>/model</code>      Switch model\n"
+                "<code>/status</code>     Data status\n"
+                "<code>/save</code>       Download h5ad\n"
+                "<code>/cancel</code>     Cancel current analysis\n"
+                "<code>/reset</code>      Reset session\n"
+            ),
+            zh=(
+                "👋  <b>OmicVerse Jarvis</b>\n"
+                f"{_fmt._DIV}\n"
+                "移动端单细胞分析助手，支持中英文自然语言指令。\n\n"
+                "<b>快速开始</b>\n"
+                "1. 通过 <code>scp</code>/<code>sftp</code> 上传 .h5ad 到 workspace\n"
+                "2. <code>/workspace</code> 查看文件 → <code>/load</code> 加载\n"
+                "3. 直接发送分析需求，例如：\n"
+                "   <i>质控 nUMI&gt;500 mito&lt;0.2，然后标准化、UMAP</i>\n\n"
+                "<b>数据命令</b>\n"
+                "<code>/workspace</code>  查看 workspace\n"
+                "<code>/ls</code>         列出文件\n"
+                "<code>/find</code>       搜索文件\n"
+                "<code>/load</code>       加载数据\n"
+                "<code>/shell</code>      执行 shell 命令\n\n"
+                "<b>会话命令</b>\n"
+                "<code>/kernel</code>     当前 kernel 状态\n"
+                "<code>/kernel ls</code>  列出所有 kernel\n"
+                "<code>/kernel new x</code> 新建并切换 kernel\n"
+                "<code>/kernel use x</code> 切换 kernel\n"
+                "<code>/memory</code>     分析历史\n"
+                "<code>/usage</code>      token 用量\n"
+                "<code>/model</code>      切换模型\n"
+                "<code>/status</code>     数据状态\n"
+                "<code>/save</code>       下载 h5ad\n"
+                "<code>/cancel</code>     取消当前分析\n"
+                "<code>/reset</code>      重置会话\n"
+            ),
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
@@ -623,37 +1359,68 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
     async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await _guard(update):
             return
-        text = (
-            "📚  <b>使用指南</b>\n"
-            f"{_fmt._DIV}\n"
-            "<b>分析示例</b>\n"
-            "• <code>质控 nUMI&gt;500 mito&lt;0.2</code>\n"
-            "• <code>标准化、高变基因、PCA、UMAP</code>\n"
-            "• <code>Leiden 聚类 resolution=0.5</code>\n"
-            "• <code>差异表达 cluster 1 vs 2</code>\n"
-            "• <code>GO 富集分析 cluster 0</code>\n\n"
-            "<b>数据管理</b>\n"
-            "• <code>/workspace</code> — workspace 概览\n"
-            "• <code>/ls [路径]</code> — 列出文件\n"
-            "• <code>/find &lt;模式&gt;</code> — 搜索文件\n"
-            "• <code>/load &lt;文件名&gt;</code> — 加载数据\n"
-            "• <code>/shell &lt;命令&gt;</code> — 执行 shell"
-            "（白名单：ls find cat head wc file du pwd tree）\n\n"
-            "<b>会话管理</b>\n"
-            "• <code>/kernel</code> — 当前 kernel 健康 + prompt 余量\n"
-            "• <code>/kernel ls</code> — 列出可用 kernels\n"
-            "• <code>/kernel new 名称</code> — 新建并切换 kernel\n"
-            "• <code>/kernel use 名称</code> — 切换到指定 kernel\n"
-            "• <code>/memory</code> — 近两天分析日志\n"
-            "• <code>/usage</code> — 最近一次 token 用量\n"
-            "• <code>/model [名称]</code> — 查看/切换 LLM 模型\n"
-            "• <code>/status</code> — 当前数据信息\n"
-            "• <code>/save</code> — 下载 .h5ad\n"
-            "• <code>/cancel</code> — 取消正在运行的分析\n"
-            "• <code>/reset</code> — 清空会话并重启 kernel\n\n"
-            "<b>自定义指令</b>\n"
-            "在 workspace 创建 <code>AGENTS.md</code>，写入偏好（语言、分析风格等），"
-            "每次请求自动注入。"
+        text = tr(
+            getattr(update.message, "text", "") or "",
+            en=(
+                "📚  <b>User Guide</b>\n"
+                f"{_fmt._DIV}\n"
+                "<b>Analysis Examples</b>\n"
+                "• <code>QC with nUMI&gt;500 and mito&lt;0.2</code>\n"
+                "• <code>Normalize, find HVGs, PCA, UMAP</code>\n"
+                "• <code>Leiden clustering resolution=0.5</code>\n"
+                "• <code>Differential expression cluster 1 vs 2</code>\n"
+                "• <code>GO enrichment for cluster 0</code>\n\n"
+                "<b>Data Management</b>\n"
+                "• <code>/workspace</code> — workspace overview\n"
+                "• <code>/ls [path]</code> — list files\n"
+                "• <code>/find &lt;pattern&gt;</code> — search files\n"
+                "• <code>/load &lt;filename&gt;</code> — load data\n"
+                "• <code>/shell &lt;command&gt;</code> — run whitelisted shell commands\n\n"
+                "<b>Session Management</b>\n"
+                "• <code>/kernel</code> — kernel health and prompt budget\n"
+                "• <code>/kernel ls</code> — list kernels\n"
+                "• <code>/kernel new name</code> — create and switch kernel\n"
+                "• <code>/kernel use name</code> — switch kernel\n"
+                "• <code>/memory</code> — recent analysis history\n"
+                "• <code>/usage</code> — latest token usage\n"
+                "• <code>/model [name]</code> — view or switch model\n"
+                "• <code>/status</code> — current data status\n"
+                "• <code>/save</code> — download <code>.h5ad</code>\n"
+                "• <code>/cancel</code> — cancel the current analysis\n"
+                "• <code>/reset</code> — reset the session and restart the kernel\n\n"
+                "<b>Custom Instructions</b>\n"
+                "Create an <code>AGENTS.md</code> file in the workspace to inject persistent preferences."
+            ),
+            zh=(
+                "📚  <b>使用指南</b>\n"
+                f"{_fmt._DIV}\n"
+                "<b>分析示例</b>\n"
+                "• <code>质控 nUMI&gt;500 mito&lt;0.2</code>\n"
+                "• <code>标准化、高变基因、PCA、UMAP</code>\n"
+                "• <code>Leiden 聚类 resolution=0.5</code>\n"
+                "• <code>差异表达 cluster 1 vs 2</code>\n"
+                "• <code>GO 富集分析 cluster 0</code>\n\n"
+                "<b>数据管理</b>\n"
+                "• <code>/workspace</code> — workspace 概览\n"
+                "• <code>/ls [路径]</code> — 列出文件\n"
+                "• <code>/find &lt;模式&gt;</code> — 搜索文件\n"
+                "• <code>/load &lt;文件名&gt;</code> — 加载数据\n"
+                "• <code>/shell &lt;命令&gt;</code> — 执行 shell（白名单：ls find cat head wc file du pwd tree）\n\n"
+                "<b>会话管理</b>\n"
+                "• <code>/kernel</code> — 当前 kernel 健康 + prompt 余量\n"
+                "• <code>/kernel ls</code> — 列出可用 kernels\n"
+                "• <code>/kernel new 名称</code> — 新建并切换 kernel\n"
+                "• <code>/kernel use 名称</code> — 切换到指定 kernel\n"
+                "• <code>/memory</code> — 近两天分析日志\n"
+                "• <code>/usage</code> — 最近一次 token 用量\n"
+                "• <code>/model [名称]</code> — 查看/切换 LLM 模型\n"
+                "• <code>/status</code> — 当前数据信息\n"
+                "• <code>/save</code> — 下载 .h5ad\n"
+                "• <code>/cancel</code> — 取消正在运行的分析\n"
+                "• <code>/reset</code> — 清空会话并重启 kernel\n\n"
+                "<b>自定义指令</b>\n"
+                "在 workspace 创建 <code>AGENTS.md</code>，写入偏好（语言、分析风格等），每次请求自动注入。"
+            ),
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
@@ -669,7 +1436,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         if session is None:
             return
 
-        lines = [f"👤  <b>用户</b>  <code>{user.id}</code>"]
+        lines = [f"👤  <b>User</b>  <code>{user.id}</code>"]
         try:
             kname = sm.get_active_kernel(user.id)
             lines.append(f"🧩  Kernel：<code>{_fmt.esc(kname)}</code>")
@@ -682,12 +1449,17 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 cols = ", ".join(a.obs.columns.tolist()[:8])
                 lines.append(f"📋  obs: <code>{_fmt.esc(cols)}</code>")
         else:
-            lines.append("📭  暂无数据  ·  使用 <code>/load</code> 加载")
+            lines.append("📭  No dataset loaded  ·  use <code>/load</code>")
 
         # Task status
+<<<<<<< Updated upstream
         task = _tasks.get(user.id)
         if task and not task.done():
             lines.append("⚙️  分析中…  ·  <code>/cancel</code> 取消")
+=======
+        if runtime.task_state(route).running:
+            lines.append("⚙️  Analysis running...  ·  <code>/cancel</code>")
+>>>>>>> Stashed changes
 
         try:
             info = session.agent.get_current_session_info()
@@ -696,7 +1468,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 mp = info.get("max_prompts", "?")
                 if getattr(session, "max_prompts_setting", 0) <= 0:
                     mp = "∞"
-                lines.append(f"💬  会话  {p}/{mp}")
+                lines.append(f"💬  Session  {p}/{mp}")
         except Exception:
             pass
 
@@ -716,8 +1488,8 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             return
         session.reset()
         await update.message.reply_text(
-            "✅  会话已重置，kernel 已重启。\n"
-            "<i>变量已清空，adata 仍可通过 /load 重新加载。</i>",
+            "✅  Session reset. Kernel restarted.\n"
+            "<i>Variables were cleared. You can reload adata with /load.</i>",
             parse_mode="HTML",
         )
 
@@ -731,9 +1503,9 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         user_id = update.effective_user.id
         cancelled = await _cancel_user_task(user_id)
         if cancelled:
-            await update.message.reply_text("🚫  分析已取消。")
+            await update.message.reply_text("🚫  Analysis cancelled.")
         else:
-            await update.message.reply_text("ℹ️  当前没有正在运行的分析。")
+            await update.message.reply_text("ℹ️  No analysis is currently running.")
 
     # ------------------------------------------------------------------
     # /save
