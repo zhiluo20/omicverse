@@ -90,20 +90,36 @@
 }
 
 /* Analysis Log Section Styles */
-.analysis-log-section {
+.analysis-log-section,
+.adata-status-section {
     background: #fff;
     border: 1px solid #e5e7eb;
     border-radius: 8px;
     padding: 20px;
 }
 
-.analysis-log-section h6 {
+.analysis-log-section h6,
+.adata-status-section h6 {
     color: #283c50;
     font-weight: 600;
     margin-bottom: 15px;
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+/* Key chips inside adata status */
+.adata-key-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-family: 'Courier New', monospace;
+    background: #f8f9fa;
+    margin: 1px 2px 1px 0;
+    color: #495057;
+    line-height: 1.5;
 }
 
 .analysis-log {
@@ -205,10 +221,292 @@ html.app-skin-dark .status-info,
 html.app-skin-dark .control-panel,
 html.app-skin-dark .visualization-panel,
 html.app-skin-dark .parameter-section,
-html.app-skin-dark .analysis-log-section {
+html.app-skin-dark .analysis-log-section,
+html.app-skin-dark .adata-status-section {
     background: #1f2937 !important;
     border-color: #374151 !important;
     color: #e5e7eb !important;
+}
+
+html.app-skin-dark .adata-key-chip {
+    background: #374151;
+    border-color: #4b5563;
+    color: #d1d5db;
+}
+
+.adata-chip-clickable:hover {
+    background: #e8f5e9;
+    border-color: #0b7a27;
+    color: #0b7a27;
+    text-decoration: underline;
+}
+
+html.app-skin-dark .adata-chip-clickable:hover {
+    background: rgba(11, 122, 39, 0.2);
+    border-color: #19a144;
+    color: #19a144;
+}
+
+/* ── DataFrame summary card in code output ──────────────────────── */
+.df-card {
+    background: #f0f4ff;
+    border: 1px solid #c5d0f5;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.82rem;
+    margin: 4px 0;
+    max-width: 640px;
+}
+.df-card-title {
+    font-weight: 700;
+    color: #1a3cc4;
+    font-size: 0.82rem;
+    letter-spacing: 0.01em;
+}
+.df-card-shape {
+    display: inline-block;
+    background: #dde8ff;
+    border: 1px solid #99b0f0;
+    color: #1a3cc4;
+    border-radius: 4px;
+    padding: 1px 8px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.df-card-cols {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin: 6px 0 4px;
+    align-items: center;
+}
+.df-col-chip {
+    background: #fff3e0;
+    border: 1px solid #ffcc80;
+    color: #e65100;
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-size: 0.7rem;
+    font-family: 'Courier New', monospace;
+}
+.df-col-more {
+    color: #6c757d;
+    font-size: 0.7rem;
+    padding: 1px 4px;
+}
+.df-card-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 4px;
+}
+.df-open-btn {
+    font-size: 0.72rem;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid #adb5bd;
+    border-radius: 4px;
+    padding: 2px 10px;
+    color: #495057;
+    transition: background 0.15s, border-color 0.15s;
+}
+.df-open-btn:hover {
+    background: #e9ecef;
+    border-color: #6c757d;
+}
+html.app-skin-dark .df-card {
+    background: #1a2540;
+    border-color: #2d4070;
+}
+html.app-skin-dark .df-card-title { color: #7a9ff5; }
+html.app-skin-dark .df-card-shape {
+    background: #1e2e55;
+    border-color: #3a5080;
+    color: #7a9ff5;
+}
+html.app-skin-dark .df-col-chip {
+    background: #2a1f10;
+    border-color: #5a4010;
+    color: #ffb866;
+}
+html.app-skin-dark .df-col-more { color: #9ca3af; }
+html.app-skin-dark .df-open-btn {
+    border-color: #4b5563;
+    color: #d1d5db;
+}
+html.app-skin-dark .df-open-btn:hover {
+    background: #374151;
+    border-color: #6b7280;
+}
+
+/* ── Dtype color badges ─────────────────────────────────────────── */
+.df-dtype-badge {
+    display: inline-block;
+    font-size: 0.62rem;
+    padding: 0 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+    font-weight: 500;
+    line-height: 1.7;
+    font-family: 'Courier New', monospace;
+}
+.df-dtype-int    { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+.df-dtype-float  { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+.df-dtype-object { background: #fef9c3; color: #713f12; border: 1px solid #fde68a; }
+.df-dtype-bool   { background: #fce7f3; color: #9d174d; border: 1px solid #fbcfe8; }
+.df-dtype-datetime { background: #f3e8ff; color: #6d28d9; border: 1px solid #e9d5ff; }
+.df-dtype-category { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.df-dtype-other  { background: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
+html.app-skin-dark .df-dtype-int    { background: #1e3a6e; color: #93c5fd; border-color: #2d4f8a; }
+html.app-skin-dark .df-dtype-float  { background: #14532d; color: #86efac; border-color: #166534; }
+html.app-skin-dark .df-dtype-object { background: #451a03; color: #fcd34d; border-color: #78350f; }
+html.app-skin-dark .df-dtype-bool   { background: #4a0028; color: #f9a8d4; border-color: #831843; }
+html.app-skin-dark .df-dtype-datetime { background: #2e1065; color: #c4b5fd; border-color: #4c1d95; }
+html.app-skin-dark .df-dtype-category { background: #022c22; color: #6ee7b7; border-color: #064e3b; }
+html.app-skin-dark .df-dtype-other  { background: #1f2937; color: #9ca3af; border-color: #374151; }
+
+/* ── Enhanced DataFrame table in variable viewer ────────────────── */
+.df-viewer-wrap {
+    overflow-x: auto;
+    max-height: 420px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    margin-top: 8px;
+}
+.df-viewer-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+    font-family: 'Courier New', monospace;
+}
+.df-viewer-table thead th {
+    position: sticky;
+    top: 0;
+    background: #f3f4f6;
+    border-bottom: 2px solid #d1d5db;
+    padding: 5px 10px;
+    text-align: left;
+    white-space: nowrap;
+    font-weight: 600;
+    z-index: 2;
+    color: #374151;
+}
+.df-viewer-table thead .df-th-index {
+    background: #e9ecef;
+    color: #6c757d;
+    min-width: 40px;
+}
+.df-viewer-table tbody td {
+    border-bottom: 1px solid #f0f0f0;
+    padding: 4px 10px;
+    white-space: nowrap;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #374151;
+}
+.df-viewer-table tbody td:first-child {
+    color: #6c757d;
+    background: #fafafa;
+    font-weight: 500;
+    position: sticky;
+    left: 0;
+    border-right: 1px solid #e5e7eb;
+}
+.df-viewer-table tbody tr:hover td {
+    background: #eef2ff;
+}
+.df-viewer-table tbody tr:hover td:first-child {
+    background: #e5eeff;
+}
+.df-viewer-footer {
+    font-size: 11px;
+    color: #6b7280;
+    padding: 5px 10px;
+    border-top: 1px solid #e5e7eb;
+    background: #f9fafb;
+    border-radius: 0 0 6px 6px;
+}
+.df-dtype-header-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+/* dark mode overrides for viewer */
+html.app-skin-dark .df-viewer-wrap { border-color: #374151; }
+html.app-skin-dark .df-viewer-table thead th {
+    background: #1f2937;
+    border-color: #4b5563;
+    color: #d1d5db;
+}
+html.app-skin-dark .df-viewer-table thead .df-th-index {
+    background: #111827;
+    color: #9ca3af;
+}
+html.app-skin-dark .df-viewer-table tbody td {
+    border-color: #1f2937;
+    color: #d1d5db;
+}
+html.app-skin-dark .df-viewer-table tbody td:first-child {
+    background: #111827;
+    color: #9ca3af;
+    border-color: #374151;
+}
+html.app-skin-dark .df-viewer-table tbody tr:hover td {
+    background: #1e2c4a;
+}
+html.app-skin-dark .df-viewer-table tbody tr:hover td:first-child {
+    background: #1a2540;
+}
+html.app-skin-dark .df-viewer-footer {
+    background: #1f2937;
+    border-color: #374151;
+    color: #9ca3af;
+}
+
+/* ── AnnData viewer in variable panel ───────────────────────────── */
+.adata-viewer-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 8px 0 10px;
+}
+
+.adata-viewer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 8px;
+}
+
+.adata-viewer-section {
+    border: 1px solid #d7e3ff;
+    border-radius: 8px;
+    background: #f8fbff;
+    padding: 8px;
+}
+
+.adata-viewer-section-title {
+    font-weight: 700;
+    font-size: 0.76rem;
+    color: #2c4a88;
+    margin-bottom: 4px;
+    font-family: 'Courier New', monospace;
+}
+
+html.app-skin-dark .adata-viewer-section {
+    border-color: #2b3d66;
+    background: #121b2f;
+}
+
+html.app-skin-dark .adata-viewer-section-title {
+    color: #9bb8ff;
 }
 
 /* File upload area */
@@ -387,7 +685,8 @@ html.app-skin-dark .logo-circle {
     .control-panel,
     .visualization-panel,
     .parameter-section,
-    .analysis-log-section {
+    .analysis-log-section,
+    .adata-status-section {
         padding: 15px;
     }
     
@@ -399,6 +698,69 @@ html.app-skin-dark .logo-circle {
 /* Animation for smooth transitions */
 * {
     transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+/* ── Legend panel chips ─────────────────────────────────────── */
+.legend-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 12px;
+    cursor: pointer;
+    border: 1.5px solid transparent;
+    transition: opacity 0.18s, border-color 0.18s, background 0.18s;
+    font-size: 0.74rem;
+    user-select: none;
+    line-height: 1.7;
+    white-space: nowrap;
+}
+.legend-chip:hover {
+    border-color: var(--bs-border-color, #dee2e6);
+    background: rgba(0, 0, 0, 0.04);
+}
+.legend-chip--dim {
+    opacity: 0.22;
+}
+.legend-chip--selected {
+    border-color: #0d6efd;
+    background: rgba(13, 110, 253, 0.07);
+}
+.legend-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    flex-shrink: 0;
+}
+.legend-colorbar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 0;
+}
+.legend-colorbar-bar {
+    width: 160px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    flex-shrink: 0;
+}
+.legend-colorbar-val {
+    font-size: 0.7rem;
+    color: var(--bs-secondary-color, #6c757d);
+    min-width: 44px;
+}
+/* Dark-mode overrides */
+.app-skin-dark .legend-chip:hover {
+    background: rgba(255, 255, 255, 0.07);
+}
+.app-skin-dark .legend-chip--selected {
+    background: rgba(13, 110, 253, 0.15);
+}
+.app-skin-dark .legend-dot {
+    border-color: rgba(255, 255, 255, 0.2);
 }
 
 /* Ensure proper z-index for overlays */

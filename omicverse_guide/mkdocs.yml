@@ -12,6 +12,9 @@ nav:
 - Installation: Installation_guild.md
 - Tutorial:
     - Bulk:
+        - Upstream:
+            - Bulk RNA-seq alignment with STAR: Tutorials-bulk/t_mapping_STAR.ipynb
+            - Bulk RNA-seq alignment with kb-python: Tutorials-bulk/t_mapping_kbpython.ipynb
         - Preprocessing:
             - Batch correction in Bulk RNA-seq or microarray data: Tutorials-bulk/t_bulk_combat.ipynb
         - Downstream:
@@ -74,6 +77,8 @@ nav:
         - Preprocess:
             - Crop and Rotation of spatial transcriptomic data: Tutorials-space/t_crop_rotate.ipynb
             - Visium 10x HD Cellpose: Tutorials-space/t_cellpose.ipynb
+            - Analyze Nanostring data: Tutorials-space/t_nanostring_preprocess.ipynb
+            - Analyze Visium HD data: Tutorials-space/t_visium_hd_preprocess.ipynb
             - Spatial clustering and denoising expressions: Tutorials-space/t_cluster_space.ipynb
             - Spatial integration and clustering : Tutorials-space/t_staligner.ipynb
         - Deconvolution:
@@ -86,19 +91,94 @@ nav:
             - Spatial Communication: Tutorials-space/t_commot_flowsig.ipynb
             - Spatial IsoDepth Calculation: Tutorials-space/t_gaston.ipynb
             - Single cell spatial alignment tools: Tutorials-space/t_slat.ipynb 
-    - LLM:
-        - Domain Research (dr): Tutorials-llm/t_dr.ipynb
-        - Domain Research (dr) — Live Web: Tutorials-llm/t_dr_web.md
-        - ov.Agent PBMC3k: Tutorials-llm/t_ov_agent_pbmc3k.ipynb
-        - UCE: Tutorials-llm/t_uce.ipynb
-        - scGPT: Tutorials-llm/t_scgpt.ipynb
-        - scFoundation: Tutorials-llm/t_scfoundation.ipynb
-        - GeneFormer: Tutorials-llm/t_geneformer.ipynb
-        - CellPlm: Tutorials-llm/t_cellplm.ipynb
-
+    - Foundation Model:
+        - Overview:
+            - ov.fm API Overview: Tutorials-llm/t_fm_guide.md
+            - ov.fm Quick Start: Tutorials-llm/t_fm.ipynb
+        - Skill-Ready Models:
+            - scGPT:
+                - Guide: Tutorials-llm/t_fm_scgpt_guide.md
+                - Tutorial: Tutorials-llm/t_scgpt.ipynb
+            - Geneformer:
+                - Guide: Tutorials-llm/t_fm_geneformer_guide.md
+                - Tutorial: Tutorials-llm/t_geneformer.ipynb
+            - UCE:
+                - Guide: Tutorials-llm/t_fm_uce_guide.md
+                - Tutorial: Tutorials-llm/t_uce.ipynb
+            - scFoundation:
+                - Guide: Tutorials-llm/t_fm_scfoundation_guide.md
+                - Tutorial: Tutorials-llm/t_scfoundation.ipynb
+            - CellPLM:
+                - Guide: Tutorials-llm/t_fm_cellplm_guide.md
+                - Tutorial: Tutorials-llm/t_cellplm.ipynb
+        - Core Models:
+            - scBERT:
+                - Guide: Tutorials-llm/t_fm_scbert_guide.md
+                - Tutorial: Tutorials-llm/t_fm_scbert.ipynb
+            - GeneCompass:
+                - Guide: Tutorials-llm/t_fm_genecompass_guide.md
+                - Tutorial: Tutorials-llm/t_fm_genecompass.ipynb
+            - Nicheformer:
+                - Guide: Tutorials-llm/t_fm_nicheformer_guide.md
+                - Tutorial: Tutorials-llm/t_fm_nicheformer.ipynb
+            - scMulan:
+                - Guide: Tutorials-llm/t_fm_scmulan_guide.md
+                - Tutorial: Tutorials-llm/t_fm_scmulan.ipynb
+        - Specialized Models:
+            - tGPT:
+                - Guide: Tutorials-llm/t_fm_tgpt_guide.md
+                - Tutorial: Tutorials-llm/t_fm_tgpt.ipynb
+            - CellFM:
+                - Guide: Tutorials-llm/t_fm_cellfm_guide.md
+                - Tutorial: Tutorials-llm/t_fm_cellfm.ipynb
+            - scCello:
+                - Guide: Tutorials-llm/t_fm_sccello_guide.md
+                - Tutorial: Tutorials-llm/t_fm_sccello.ipynb
+            - scPRINT:
+                - Guide: Tutorials-llm/t_fm_scprint_guide.md
+                - Tutorial: Tutorials-llm/t_fm_scprint.ipynb
+            - AIDO.Cell:
+                - Guide: Tutorials-llm/t_fm_aidocell_guide.md
+                - Tutorial: Tutorials-llm/t_fm_aidocell.ipynb
+            - PULSAR:
+                - Guide: Tutorials-llm/t_fm_pulsar_guide.md
+                - Tutorial: Tutorials-llm/t_fm_pulsar.ipynb
+            - Tabula:
+                - Guide: Tutorials-llm/t_fm_tabula_guide.md
+                - Tutorial: Tutorials-llm/t_fm_tabula.ipynb
+        - Domain-Specific Models:
+            - ATACformer (ATAC-seq):
+                - Guide: Tutorials-llm/t_fm_atacformer_guide.md
+                - Tutorial: Tutorials-llm/t_fm_atacformer.ipynb
+            - scPlantLLM (Plant):
+                - Guide: Tutorials-llm/t_fm_scplantllm_guide.md
+                - Tutorial: Tutorials-llm/t_fm_scplantllm.ipynb
+            - LangCell (Text+Cell):
+                - Guide: Tutorials-llm/t_fm_langcell_guide.md
+                - Tutorial: Tutorials-llm/t_fm_langcell.ipynb
+            - Cell2Sentence (LLM Fine-tuning):
+                - Guide: Tutorials-llm/t_fm_cell2sentence_guide.md
+                - Tutorial: Tutorials-llm/t_fm_cell2sentence.ipynb
+            - GenePT (Gene Embeddings):
+                - Guide: Tutorials-llm/t_fm_genept_guide.md
+                - Tutorial: Tutorials-llm/t_fm_genept.ipynb
+            - ChatCell (Conversational):
+                - Guide: Tutorials-llm/t_fm_chatcell_guide.md
+                - Tutorial: Tutorials-llm/t_fm_chatcell.ipynb
+    - J.A.R.V.I.S.:
+        - Notebook/pipeline: 
+            - J.A.R.V.I.S. with PBMC3k: Tutorials-llm/t_ov_agent_pbmc3k.ipynb
+            - J.A.R.V.I.S. with Ten-Task Suite: Tutorials-llm/ov_agent_ten_task_suite.ipynb
+        - MCP Server:
+            - MCP Server Guide: Tutorials-llm/t_mcp_guide.md
+            - Using OmicVerse MCP with Claude Code: Tutorials-llm/t_mcp_claude_code.md
+        - Domain Research:  
+            - Basic Usage: Tutorials-llm/t_dr.ipynb
+            - Live Web: Tutorials-llm/t_dr_web.md
     - Plotting:
         - Visualization of single cell RNA-seq: Tutorials-plotting/t_visualize_single.ipynb
         - Visualization of bulk RNA-seq: Tutorials-plotting/t_visualize_bulk.ipynb
+        - Palette optimization for publication-quality single-cell & spatial plots: Tutorials-plotting/t_palette.ipynb
         - Color system: Tutorials-plotting/t_visualize_colorsystem.ipynb
 - GPU Support: GPU_supported_registry_functions.md
 - API documentation: $api/omicverse.***

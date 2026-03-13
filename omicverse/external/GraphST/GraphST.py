@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from scipy.sparse.csc import csc_matrix
 from scipy.sparse.csr import csr_matrix
 import pandas as pd
-from ...utils.registry import register_function
+from ..._registry import register_function
     
 @register_function(
     aliases=["GraphST空间模型", "GraphST", "graph_spatial_transcriptomics", "图空间转录组", "GraphST聚类"],
@@ -35,6 +35,25 @@ from ...utils.registry import register_function
     related=["space.clusters", "space.pySTAGATE", "utils.cluster"]
 )
 class GraphST():
+    """GraphST model wrapper for spatial transcriptomics representation learning.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Spatial AnnData input.
+    adata_sc : AnnData, optional
+        Single-cell reference used when ``deconvolution=True``.
+    device : torch.device, default=torch.device('cpu')
+        Training device.
+    learning_rate : float, default=0.001
+        Learning rate for spatial representation learning.
+    learning_rate_sc : float, default=0.01
+        Learning rate for single-cell branch.
+    weight_decay : float, default=0.0
+        Weight decay.
+    epochs : int, default=600
+        Training epochs.
+    """
     def __init__(self, 
         adata,
         adata_sc = None,

@@ -1,5 +1,4 @@
-
-from .utils.registry import register_function
+from ._registry import register_function
 
 class omicverseConfig:
 
@@ -29,13 +28,19 @@ class omicverseConfig:
     def gpu_init(self,managed_memory=True,pool_allocator=True,devices=0):
         r"""Initialize GPU mode with RAPIDS for accelerated single-cell analysis.
 
-        Arguments:
-            managed_memory: Enable NVIDIA Unified Memory for oversubscription. Default: True.
-            pool_allocator: Enable memory pool allocator for faster allocations. Default: True.
-            devices: GPU device IDs to register. Default: 0.
+        Parameters
+        ----------
+        managed_memory:bool, optional
+            Enable NVIDIA Unified Memory to support oversubscription for large datasets.
+        pool_allocator:bool, optional
+            Enable RMM memory pool allocator for faster repeated GPU allocations.
+        devices:int|list[int], optional
+            CUDA device index (or indices) to register in RMM.
 
-        Returns:
-            None: Sets the mode to 'gpu' and configures RAPIDS environment.
+        Returns
+        -------
+        None
+            Sets ``self.mode`` to ``'gpu'`` and configures RAPIDS/CuPy allocators.
 
         Examples:
             >>> import omicverse as ov
@@ -85,11 +90,14 @@ class omicverseConfig:
     def cpu_gpu_mixed_init(self):
         r"""Initialize CPU-GPU mixed mode for accelerated single-cell analysis.
 
-        Arguments:
-            None
+        Parameters
+        ----------
+        None
 
-        Returns:
-            None: Sets the mode to 'cpu-gpu-mixed' and detects available GPU accelerators.
+        Returns
+        -------
+        None
+            Sets ``self.mode`` to ``'cpu-gpu-mixed'`` and reports detected accelerators.
 
         Examples:
             >>> import omicverse as ov
@@ -133,18 +141,17 @@ except ImportError:  # pragma: no cover - optional dependency
 def check_acceleration_packages():
     """
     Check which acceleration packages are installed and provide installation guidance.
-    
+
     Returns
     -------
     dict
         Dictionary containing installation status and recommendations
     """
     status = {
-        'torchdr': {'installed': False, 'recommended': False, 'device': 'cuda'},
         'mlx': {'installed': False, 'recommended': False, 'device': 'mps'},
         'torch': {'installed': False, 'recommended': False, 'device': 'any'}
     }
-    
+
     # Check PyTorch
     try:
         import torch
@@ -152,16 +159,7 @@ def check_acceleration_packages():
         status['torch']['recommended'] = True
     except ImportError:
         pass
-    
-    # Check TorchDR
-    try:
-        import torchdr
-        status['torchdr']['installed'] = True
-        status['torchdr']['recommended'] = True
-    except ImportError:
-        if torch is not None and torch.cuda.is_available():
-            status['torchdr']['recommended'] = True
-    
+
     # Check MLX
     try:
         import mlx.core as mx
@@ -171,7 +169,7 @@ def check_acceleration_packages():
     except ImportError:
         if torch is not None and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
             status['mlx']['recommended'] = True
-    
+
     return status
 
 
@@ -181,7 +179,7 @@ def print_acceleration_status(verbose=True):
     
     Parameters
     ----------
-    verbose : bool
+    verbose:bool
         Whether to print detailed information
     """
     status = check_acceleration_packages()
@@ -200,28 +198,13 @@ def print_acceleration_status(verbose=True):
                     print(f"   CUDA: Available ({torch.cuda.device_count()} device(s))")
                 if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                     print(f"   MPS: Available (Apple Silicon)")
+                print(f"   {Colors.CYAN}Note: Using built-in torch_pca for GPU-accelerated PCA{Colors.ENDC}")
             except:
                 pass
     else:
         print(f"{Colors.WARNING}⚠️ PyTorch: Not installed{Colors.ENDC}")
         print(f"   {Colors.CYAN}Install with: pip install torch{Colors.ENDC}")
-    
-    # TorchDR status
-    if status['torchdr']['installed']:
-        print(f"{Colors.GREEN}✅ TorchDR: Installed{Colors.ENDC}")
-        if verbose:
-            try:
-                import torchdr
-                print(f"   Version: {torchdr.__version__}")
-            except:
-                pass
-    elif status['torchdr']['recommended']:
-        print(f"{Colors.WARNING}⚠️ TorchDR: Not installed (Recommended for CUDA){Colors.ENDC}")
-        print(f"   {Colors.CYAN}Install with: pip install torchdr{Colors.ENDC}")
-        print(f"   {Colors.CYAN}For GPU-accelerated dimensionality reduction{Colors.ENDC}")
-    else:
-        print(f"{Colors.FAIL}❌ TorchDR: Not installed{Colors.ENDC}")
-    
+
     # MLX status
     if status['mlx']['installed']:
         print(f"{Colors.GREEN}✅ MLX: Installed{Colors.ENDC}")
@@ -246,12 +229,10 @@ def print_acceleration_status(verbose=True):
     # Recommendations
     recommendations = []
     if not status['torch']['installed']:
-        recommendations.append("Install PyTorch for basic GPU support")
-    if status['torchdr']['recommended'] and not status['torchdr']['installed']:
-        recommendations.append("Install TorchDR for CUDA-accelerated PCA")
+        recommendations.append("Install PyTorch for GPU support (includes built-in torch_pca)")
     if status['mlx']['recommended'] and not status['mlx']['installed']:
         recommendations.append("Install MLX for Apple Silicon GPU acceleration")
-    
+
     if recommendations:
         print(f"{Colors.CYAN}💡 Recommendations:{Colors.ENDC}")
         for i, rec in enumerate(recommendations, 1):
@@ -264,21 +245,21 @@ def get_optimal_device(prefer_gpu=True, verbose=False):
     """
     Get the optimal PyTorch device based on available hardware.
     Now includes acceleration package status checking.
-    
+
     Priority order:
-    1. CUDA (NVIDIA GPUs) - requires TorchDR for optimal performance
-    2. MPS (Apple Silicon) - requires MLX for optimal performance
-    3. ROCm (AMD GPUs) 
+    1. CUDA (NVIDIA GPUs) - uses built-in torch_pca for GPU acceleration
+    2. MPS (Apple Silicon) - MLX recommended for optimal performance
+    3. ROCm (AMD GPUs)
     4. XPU (Intel GPUs)
     5. CPU (fallback)
-    
+
     Parameters
     ----------
-    prefer_gpu : bool
+    prefer_gpu:bool
         Whether to prefer GPU over CPU when available
-    verbose : bool
+    verbose:bool
         Whether to print device selection information and acceleration status
-        
+
     Returns
     -------
     torch.device
@@ -305,12 +286,7 @@ def get_optimal_device(prefer_gpu=True, verbose=False):
         device = torch.device("cuda")
         if verbose:
             print(f"Using CUDA device: {torch.cuda.get_device_name()}")
-            # Check if TorchDR is available for optimal performance
-            try:
-                import torchdr
-                print(f"{Colors.GREEN}✅ TorchDR available for GPU-accelerated PCA{Colors.ENDC}")
-            except ImportError:
-                print(f"{Colors.WARNING}⚠️ TorchDR not installed - install with: pip install torchdr{Colors.ENDC}")
+            print(f"{Colors.GREEN}✅ Using built-in torch_pca for GPU-accelerated PCA{Colors.ENDC}")
         return device
     
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -354,16 +330,16 @@ def prepare_data_for_device(X, device, verbose=False):
     
     Parameters
     ----------
-    X : array-like
+    X:array-like
         Input data (numpy array, sparse matrix, or other array-like)
-    device : torch.device
+    device:torch.device
         Target device
-    verbose : bool
+    verbose:bool
         Whether to print conversion information
         
     Returns
     -------
-    X_prepared : array-like
+    X_prepared:array-like
         Data prepared for the target device
     """
     import numpy as np
@@ -478,9 +454,31 @@ reference_dict = {
     'Banksy':'Singhal, V., Chou, N., Lee, J. et al. BANKSY unifies cell typing and tissue domain segmentation for scalable spatial omics data analysis. Nat Genet 56, 431–441 (2024). https://doi.org/10.1038/s41588-024-01664-3'
 }
 
+@register_function(
+    aliases=['生成参考表', 'generate_reference_table', 'reference table', 'annotation reference table'],
+    category="core",
+    description="Generate a standardized reference table from AnnData feature metadata for downstream annotation, mapping, and report generation workflows.",
+    prerequisites={'optional_functions': ['utils.get_gene_annotation']},
+    requires={'var': ['gene symbols or feature annotation']},
+    produces={'uns': ['reference_table']},
+    auto_fix='none',
+    examples=['ov.generate_reference_table(adata)'],
+    related=['utils.get_gene_annotation', 'datasets.download_data', 'single.generate_scRNA_report']
+)
 def generate_reference_table(adata):
     """
-    Generate a table of references for the adata object.
+    Generate a standardized reference table from ``adata.uns['REFERENCE_MANU']``.
+
+    Parameters
+    ----------
+    adata:AnnData
+        AnnData object that stores method references in ``uns['REFERENCE_MANU']``.
+
+    Returns
+    -------
+    pandas.DataFrame|None
+        A table with columns ``method``, ``content``, and ``reference``.
+        Returns ``None`` when no reference metadata is available.
     """
     import pandas as pd
     if 'REFERENCE_MANU' not in adata.uns.keys():
@@ -505,7 +503,7 @@ def print_gpu_usage_color(bar_length: int = 30):
 
     Parameters
     ----------
-    bar_length : int
+    bar_length:int
         Total characters in each usage bar (filled + empty).
     """
     # ANSI escape codes
@@ -694,6 +692,15 @@ def print_gpu_usage_color(bar_length: int = 30):
 def print_gpu_usage_simple():
     """
     Simple GPU usage display without color bars - useful for non-NVIDIA GPUs.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+        Prints available GPU backend status and memory usage when supported.
     """
     if torch is None:
         print("PyTorch not available for GPU monitoring.")

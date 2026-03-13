@@ -10,6 +10,7 @@ import sys
 import os
 import subprocess
 import importlib
+import argparse
 from pathlib import Path
 
 def check_dependencies():
@@ -109,8 +110,50 @@ def get_available_port(start_port=5050):
     
     return None
 
+
+def _parse_args():
+    """Parse launcher CLI arguments."""
+    remote_mode = os.environ.get("OV_WEB_REMOTE_MODE", "0") == "1"
+
+    parser = argparse.ArgumentParser(
+        description="Launch OmicVerse web server."
+    )
+    parser.add_argument(
+        "--host",
+        # Remote mode defaults to loopback for safety (require tunnel/proxy)
+        default=os.environ.get("HOST", "127.0.0.1" if remote_mode else "0.0.0.0"),
+        help="Host to bind (default: 127.0.0.1 in remote mode, 0.0.0.0 otherwise).",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PORT", "0") or 0),
+        help="Port to bind. If omitted, auto-select from 5050.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable Flask debug mode.",
+    )
+    parser.add_argument(
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="Disable Flask debug mode.",
+    )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        default=remote_mode,
+        help="Enable remote mode (bind loopback, require tunnel/proxy).",
+    )
+    parser.set_defaults(debug=False)
+    return parser.parse_args()
+
 def main():
     """Main launcher function"""
+    args = _parse_args()
+
     print("🚀 OmicVerse 单细胞分析平台启动器")
     print("=" * 50)
     
@@ -130,23 +173,36 @@ def main():
     if not check_files():
         return 1
     
-    # Find available port
-    port = get_available_port()
+    # Resolve port (explicit first, then auto-discovery)
+    port = args.port if args.port > 0 else get_available_port()
     if port is None:
         print("❌ 无法找到可用端口")
         return 1
-    
+
     print(f"\n🌐 服务将在端口 {port} 启动")
-    
+
     # Set environment variables
     os.environ['PORT'] = str(port)
     os.environ['FLASK_ENV'] = 'development'
-    
+
+    # Propagate remote mode so app.py can read it
+    if args.remote:
+        os.environ['OV_WEB_REMOTE_MODE'] = '1'
+        # Force loopback bind in remote mode unless explicitly overridden
+        if args.host == '0.0.0.0':
+            args.host = '127.0.0.1'
+
     # Start the server
     print("\n🎯 启动服务器...")
     print("-" * 50)
-    print(f"📱 本地访问: http://localhost:{port}")
-    print(f"🌍 网络访问: http://0.0.0.0:{port}")
+    if args.remote:
+        print(f"🔒 Remote mode: bound to {args.host}:{port} (loopback only)")
+        print(f"   Access via SSH tunnel:")
+        print(f"     ssh -L {port}:127.0.0.1:{port} user@server")
+        print(f"   Then open: http://localhost:{port}")
+    else:
+        print(f"📱 本地访问: http://localhost:{port}")
+        print(f"🌍 网络访问: http://{args.host}:{port}")
     print("⌨️  按 Ctrl+C 停止服务器")
     print("-" * 50)
     
@@ -154,7 +210,7 @@ def main():
         # Import and run the Flask app
         sys.path.insert(0, str(Path(__file__).parent))
         from app import app
-        app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
+        app.run(debug=args.debug, host=args.host, port=port, use_reloader=False)
     except KeyboardInterrupt:
         print("\n\n👋 服务器已停止")
         return 0

@@ -6,12 +6,12 @@ from scipy.sparse import issparse
 import pandas as pd
 
 from .._settings import EMOJI,add_reference
-from ..utils.registry import register_function
+from .._registry import register_function
 
 @register_function(
     aliases=["差异组成分析", "DCT", "differential_abundance", "差异丰度分析", "细胞组成分析"],
     category="single",
-    description="Differential cell type composition analysis using scCODA or Milo methods for abundance testing",
+    description="Differential cell type composition analysis using scCODA or Milo (edgepy) methods for abundance testing",
     prerequisites={
         'functions': ['leiden'],
         'optional_functions': ['pca', 'neighbors']
@@ -33,11 +33,11 @@ from ..utils.registry import register_function
         "results = dct_obj.get_results()",
         "# Set FDR threshold",
         "dct_obj.model.set_fdr(dct_obj.sccoda_data, modality_key='coda', est_fdr=0.4)",
-        "# Initialize DCT with Milo",
+        "# Initialize DCT with Milo (OmicVerse's pure Python implementation)",
         "dct_obj = ov.single.DCT(adata, condition='condition', ctrl_group='Control',",
-        "                        test_group='Disease', cell_type_key='celltype',",
+        "                        test_group='Disease', cell_type_key='celltype', sample_key='sample',",
         "                        method='milo', use_rep='X_pca')",
-        "# Run Milo analysis",
+        "# Run Milo analysis (uses edgepy solver)",
         "dct_obj.run()",
         "# Get Milo results with mixing threshold",
         "milo_results = dct_obj.get_results(mix_threshold=0.6)"
@@ -45,6 +45,23 @@ from ..utils.registry import register_function
     related=["single.DEG", "external.pertpy", "pp.neighbors"]
 )
 class DCT:
+    """Differential cell-type abundance testing wrapper.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input single-cell AnnData.
+    condition : str
+        Condition column in ``adata.obs``.
+    ctrl_group : str
+        Control-group label.
+    test_group : str
+        Test-group label.
+    cell_type_key : str
+        Cell-type annotation column.
+    method : str, default='sccoda'
+        Differential-abundance backend.
+    """
     def __init__(self, 
                  adata: AnnData, 
                  condition: str,
@@ -56,22 +73,31 @@ class DCT:
                  use_rep=None,
     ):
         """
-        Init the differential cell type abundance analysis
+        Initialize differential cell-type abundance analysis.
 
-        Arguments:
-            adata: AnnData object containing the single-cell data
-            condition: The column name in adata.obs containing condition information
-            ctrl_group: The control group name in the condition column
-            test_group: The test group name in the condition column
-            cell_type_key: The column name in adata.obs containing cell type information
-            method: Method for differential abundance analysis, either 'sccoda' or 'milo'
-            sample_key: The column name in adata.obs containing sample information
-            use_rep: The representation in adata.obsm to use for Milo analysis
+        Parameters
+        ----------
+        adata : AnnData
+            Single-cell AnnData object.
+        condition : str
+            Obs column containing condition labels.
+        ctrl_group : str
+            Control condition label.
+        test_group : str
+            Test condition label.
+        cell_type_key : str
+            Obs column containing cell-type annotations.
+        method : str, default='sccoda'
+            Differential abundance method: ``'sccoda'``, ``'milo'``, or ``'milopy'``.
+        sample_key : str or None, default=None
+            Obs column containing sample IDs (required for Milo methods).
+        use_rep : str or None, default=None
+            Embedding key in ``adata.obsm`` used for neighborhood graph in Milo.
 
-        Returns:
-            None
+        Returns
+        -------
+        None
         """
-        import pertpy as pt
         # filter adata for condition and test group
         self.adata = adata
         self.condition = condition
@@ -89,6 +115,8 @@ class DCT:
         print(f"{EMOJI['bar']} Condition: {self.condition}, Control group: {self.ctrl_group}, Test group: {self.test_group}")
 
         if method == 'sccoda':
+            # Import pertpy only for sccoda
+            import pertpy as pt
             self.model = pt.tl.Sccoda()
             self.sccoda_data = self.model.load(
                 adata,
@@ -104,13 +132,23 @@ class DCT:
                 formula="condition",
                 #reference_cell_type="Goblet",
             )
-        elif method == 'milo':
+        elif method == 'milopy':
             #check if use_rep is provided
             if use_rep is None:
                 raise ValueError("use_rep must be provided for milo")
             elif use_rep not in adata.obsm.keys():
                 raise ValueError("use_rep must be a valid embedding in adata.obsm")
-            
+
+            # Use OmicVerse's Milo implementation (pure Python, uses edgepy)
+            from ._milo_dev import Milo
+            self.model = Milo()
+            self.mdata = self.model.load(adata)
+            sc.pp.neighbors(self.mdata["rna"], use_rep=use_rep, n_neighbors=150)
+            self.model.make_nhoods(self.mdata["rna"], prop=0.1)
+            self.mdata = self.model.count_nhoods(self.mdata, sample_col=sample_key)
+        elif method == 'milo':
+            # Use pertpy's Milo implementation
+            import pertpy as pt
             self.model = pt.tl.Milo()
             self.mdata = self.model.load(adata)
             sc.pp.neighbors(self.mdata["rna"], use_rep=use_rep, n_neighbors=150)
@@ -122,13 +160,16 @@ class DCT:
 
     def run(self,**kwargs):
         """
-        Run the differential cell type abundance analysis
+        Run differential abundance testing.
 
-        Arguments:
-            **kwargs: Additional arguments to pass to the differential abundance method
+        Parameters
+        ----------
+        **kwargs
+            Additional method-specific keyword arguments.
 
-        Returns:
-            None
+        Returns
+        -------
+        None
         """
         if self.method == 'sccoda':
             self.model.run_nuts(self.sccoda_data, modality_key="coda", **kwargs)
@@ -136,6 +177,19 @@ class DCT:
             print(f"{EMOJI['check_mark']} {self.method} DCT analysis completed")
             add_reference(self.adata,'Sccoda','differential cell type abundance analysis with Sccoda')
             add_reference(self.adata,'pertpy','Sccoda is a part of pertpy')
+        elif self.method == 'milopy':
+            # Use edgepy solver (pure Python implementation)
+            self.model.da_nhoods(
+                self.mdata,
+                design=f"~{self.condition}",
+                model_contrasts=f"{self.condition}[{self.test_group}]-{self.condition}[{self.ctrl_group}]",
+                solver="edger"
+            )
+            self.model.build_nhood_graph(self.mdata)
+            self.model.annotate_nhoods(self.mdata, anno_col=self.cell_type_key)
+            print(f"{EMOJI['check_mark']} {self.method} DCT analysis completed")
+            add_reference(self.adata,'Milo','differential cell type abundance analysis with Milo')
+            add_reference(self.adata,'OmicVerse','Milo implementation uses OmicVerse edgepy solver')
         elif self.method == 'milo':
             self.model.da_nhoods(self.mdata, design=f"~{self.condition}", model_contrasts=f"{self.condition}{self.test_group}-{self.condition}{self.ctrl_group}")
             self.model.build_nhood_graph(self.mdata)
@@ -148,18 +202,27 @@ class DCT:
 
     def get_results(self,mix_threshold: float=0.6):
         """
-        Get the results of the differential cell type abundance analysis
+        Retrieve differential abundance results.
 
-        Arguments:
-            mix_threshold: The threshold for determining mixed neighborhoods in Milo analysis
+        Parameters
+        ----------
+        mix_threshold : float, default=0.6
+            Minimum neighborhood purity for Milo annotations; lower-purity
+            neighborhoods are labeled ``'Mixed'``.
 
-        Returns:
-            DataFrame: Results of the differential abundance analysis
+        Returns
+        -------
+        pandas.DataFrame
+            Differential abundance result table.
         """
         if self.method == 'sccoda':
             return self.model.get_effect_df(self.sccoda_data, modality_key="coda")
         elif self.method == 'milo':
             self.mdata["milo"].var[ "nhood_annotation"]=self.mdata["milo"].var[ "nhood_annotation"].astype(str)
+            self.mdata["milo"].var.loc[self.mdata["milo"].var["nhood_annotation_frac"] < mix_threshold, "nhood_annotation"] = "Mixed"
+            return self.mdata["milo"].var
+        elif self.method == 'milopy':
+            self.mdata["milo"].var['nhood_annotation']=self.mdata["milo"].var['nhood_annotation'].astype(str)
             self.mdata["milo"].var.loc[self.mdata["milo"].var["nhood_annotation_frac"] < mix_threshold, "nhood_annotation"] = "Mixed"
             return self.mdata["milo"].var
         else:
@@ -204,6 +267,23 @@ class DCT:
     related=["single.DCT", "bulk.pyDEG", "tl.rank_genes_groups"]
 )
 class DEG:
+    """Differential gene-expression testing wrapper for single-cell datasets.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Input single-cell AnnData.
+    condition : str
+        Condition column in ``adata.obs``.
+    ctrl_group : str
+        Control-group label.
+    test_group : str
+        Test-group label.
+    method : str, default='wilcoxon'
+        DEG method name.
+    use_raw : bool or None, default=None
+        Whether to use ``adata.raw`` as expression matrix.
+    """
     def __init__(self,
                  adata: AnnData,
                  condition: str,
@@ -213,18 +293,27 @@ class DEG:
                  use_raw: bool=None,
                  ):
         """
-        Init the differential expression gene analysis
+        Initialize differential expression analysis.
 
-        Arguments:
-            adata: AnnData object containing the single-cell data
-            condition: The column name in adata.obs containing condition information
-            ctrl_group: The control group name in the condition column
-            test_group: The test group name in the condition column
-            method: Method for differential expression analysis, either 'wilcoxon', 't-test', or 'memento-de'
-            use_raw: Whether to use adata.raw for DEG analysis. If None, will auto-detect (use raw if it exists)
+        Parameters
+        ----------
+        adata : AnnData
+            Single-cell AnnData object.
+        condition : str
+            Obs column containing condition labels.
+        ctrl_group : str
+            Control condition label.
+        test_group : str
+            Test condition label.
+        method : str, default='wilcoxon'
+            DEG method: ``'wilcoxon'``, ``'t-test'``, or ``'memento-de'``.
+        use_raw : bool or None, default=None
+            Whether to use ``adata.raw`` as expression matrix. If ``None``,
+            auto-detects based on availability.
 
-        Returns:
-            None
+        Returns
+        -------
+        None
         """
         # Auto-detect use_raw
         if use_raw is None:
@@ -272,23 +361,23 @@ class DEG:
             max_cells: int=100000,
             **kwargs):
         """
-        Run the differential expression analysis
+        Run differential expression testing.
 
-        Arguments:
-            celltype_key: The column name in adata.obs containing cell type information
-            celltype_group: List of cell types to analyze, if None, all cell types will be analyzed
-            **kwargs: Additional arguments for the differential expression method
-                capture_rate: float, default=0.07
-                    The capture rate for the DE analysis
-                treatment_col: str, default='stim'
-                    The column name of the treatment variable
-                num_cpus: int, default=12
-                    The number of CPUs to use for the DE analysis
-                num_boot: int, default=5000
-                    The number of bootstraps to use for the DE analysis
+        Parameters
+        ----------
+        celltype_key : str
+            Obs column containing cell-type labels.
+        celltype_group : list or None, default=None
+            Cell types to include. If ``None``, uses all cell types.
+        max_cells : int, default=100000
+            Maximum number of cells used for testing (downsamples if exceeded).
+        **kwargs
+            Additional method-specific arguments, e.g. memento parameters
+            ``capture_rate``, ``num_cpus``, and ``num_boot``.
 
-        Returns:
-            None
+        Returns
+        -------
+        None
         """
         if celltype_group is None:
             celltype_group = self.adata.obs[celltype_key].unique()
@@ -387,19 +476,18 @@ class DEG:
         
     def get_results(self):
         """
-        Get the results of the differential expression analysis
+        Get DEG result table.
 
-        Arguments:
-            None
-
-        Returns:
-            DataFrame: Results of the differential expression analysis
+        Returns
+        -------
+        pandas.DataFrame
+            Differential expression results in OmicVerse DEG format.
         """
         if self.method == 'wilcoxon' or self.method == 't-test':
-            md_d = ( 
-                sc.get.rank_genes_groups_df(self.adata_test, group=self.test_group) 
-                .set_index("names", drop=False) 
-            ) 
+            md_d = (
+                sc.get.rank_genes_groups_df(self.adata_test, group=self.test_group)
+                .set_index("names", drop=False)
+            )
             res=pd.DataFrame(index=md_d['names'].tolist())
             res['log2FC']=md_d['logfoldchanges'].tolist()
             res['pvalue']=md_d['pvals'].tolist()
@@ -412,11 +500,69 @@ class DEG:
             res['-log(qvalue)'] = -np.log10(res['qvalue'])
             #calculate the Mean of the self.adata_test's genes(var)
             res['baseMean']=np.mean(self.adata_test.to_df(),axis=0).loc[res.index]
+
+            # Calculate expression percentage for ctrl and test groups
+            print(f"{EMOJI['bar']} Calculating expression percentages for {self.ctrl_group} and {self.test_group}...")
+            ctrl_cells = self.adata_test[self.adata_test.obs[self.condition] == self.ctrl_group]
+            test_cells = self.adata_test[self.adata_test.obs[self.condition] == self.test_group]
+
+            # Get expression matrix for each group
+            if issparse(ctrl_cells.X):
+                ctrl_expr = ctrl_cells.X.toarray()
+            else:
+                ctrl_expr = ctrl_cells.X
+
+            if issparse(test_cells.X):
+                test_expr = test_cells.X.toarray()
+            else:
+                test_expr = test_cells.X
+
+            # Calculate percentage of cells expressing each gene (expression > 0)
+            pct_ctrl = np.sum(ctrl_expr > 0, axis=0) / ctrl_cells.shape[0] * 100
+            pct_test = np.sum(test_expr > 0, axis=0) / test_cells.shape[0] * 100
+
+            # Map to gene names in results
+            gene_to_idx = {gene: idx for idx, gene in enumerate(ctrl_cells.var_names)}
+            res['pct_ctrl'] = [pct_ctrl[gene_to_idx[gene]] if gene in gene_to_idx else 0 for gene in res.index]
+            res['pct_test'] = [pct_test[gene_to_idx[gene]] if gene in gene_to_idx else 0 for gene in res.index]
+            res['pct_diff'] = res['pct_test'] - res['pct_ctrl']
+
+            print(f"{EMOJI['check_mark']} Expression percentages calculated successfully")
+
             self.result=res
             return res
         elif self.method == 'memento-de':
             self.result=self.result_1d
             self.result['baseMean']=np.mean(self.adata_test.to_df(),axis=0).iloc[self.result.index.to_list()].to_list()
+
+            # Calculate expression percentage for ctrl and test groups
+            print(f"{EMOJI['bar']} Calculating expression percentages for {self.ctrl_group} and {self.test_group}...")
+            ctrl_cells = self.adata_test[self.adata_test.obs[self.condition] == self.ctrl_group]
+            test_cells = self.adata_test[self.adata_test.obs[self.condition] == self.test_group]
+
+            # Get expression matrix for each group
+            if issparse(ctrl_cells.X):
+                ctrl_expr = ctrl_cells.X.toarray()
+            else:
+                ctrl_expr = ctrl_cells.X
+
+            if issparse(test_cells.X):
+                test_expr = test_cells.X.toarray()
+            else:
+                test_expr = test_cells.X
+
+            # Calculate percentage of cells expressing each gene (expression > 0)
+            pct_ctrl = np.sum(ctrl_expr > 0, axis=0) / ctrl_cells.shape[0] * 100
+            pct_test = np.sum(test_expr > 0, axis=0) / test_cells.shape[0] * 100
+
+            # Map to gene names in results
+            gene_to_idx = {gene: idx for idx, gene in enumerate(ctrl_cells.var_names)}
+            self.result['pct_ctrl'] = [pct_ctrl[gene_to_idx[gene]] if gene in gene_to_idx else 0 for gene in self.result.index]
+            self.result['pct_test'] = [pct_test[gene_to_idx[gene]] if gene in gene_to_idx else 0 for gene in self.result.index]
+            self.result['pct_diff'] = self.result['pct_test'] - self.result['pct_ctrl']
+
+            print(f"{EMOJI['check_mark']} Expression percentages calculated successfully")
+
             return self.result
         else:
             raise ValueError(f"Method {self.method} not supported")

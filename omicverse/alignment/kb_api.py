@@ -14,134 +14,65 @@ import os
 import sys
 import shlex
 import shutil
-import subprocess
 from uuid import uuid4
 from typing import List, Dict, Optional, Union
 import importlib.util
-from ..utils.registry import register_function
-
-class Colors:
-    """ANSI color codes for terminal output styling."""
-    HEADER = '\033[95m'    # Purple
-    BLUE = '\033[94m'      # Blue
-    CYAN = '\033[96m'      # Cyan
-    GREEN = '\033[92m'     # Green
-    WARNING = '\033[93m'   # Yellow
-    FAIL = '\033[91m'      # Red
-    ENDC = '\033[0m'       # Reset
-    BOLD = '\033[1m'       # Bold
-    UNDERLINE = '\033[4m'  # Underline
+from .._registry import register_function
+from ._cli_utils import build_env, ensure_dir, resolve_executable, run_cmd
 
 
-def _ensure_dir(path: str):
-    if not path:
-        return
-    os.makedirs(path, exist_ok=True)
+def _resolve_kb() -> str:
+    """Resolve the 'kb' executable, falling back to ``python -m kb``."""
+    try:
+        return resolve_executable("kb", auto_install=False)
+    except FileNotFoundError:
+        pass
 
-
-def _which_kb() -> str:
-    """
-    Resolve the 'kb' executable.
-
-    Priority:
-    1) Return the 'kb' executable found on the PATH.
-    2) If not found, try to find an executable named 'kb' in the same directory
-       as the current Python interpreter (this covers venv/conda installs).
-    3) If still not found, fall back to invoking a module with the current Python:
-       prefer `python -m kb` if the 'kb' module is importable, otherwise try
-       `python -m kb_python` if that module is importable.
-    If none of the above are available, raise FileNotFoundError.
-    """
-    # 1) Look for 'kb' on PATH first
-    kb = shutil.which('kb')
-    if kb:
-        return kb
-
-    # 2) Try to find a 'kb' executable next to the current Python executable
-    #    (handles cases where the console script is installed into the env's bin/)
-    if sys.executable:
-        exe_dir = os.path.dirname(sys.executable)
-        for candidate in ('kb', 'kb.exe'):
-            cand_path = os.path.join(exe_dir, candidate)
-            if os.path.isfile(cand_path) and os.access(cand_path, os.X_OK):
-                return cand_path
-
-    # 3) Fall back to using `python -m <module>` but only if the module exists.
     python_exe = sys.executable or shutil.which('python3') or shutil.which('python')
     if python_exe:
         try:
-            # Prefer the 'kb' module (if present) so we run `python -m kb`
             if importlib.util.find_spec('kb') is not None:
                 return f'{python_exe} -m kb'
-            # Otherwise, try the legacy/alternate 'kb_python' package
             if importlib.util.find_spec('kb_python') is not None:
                 return f'{python_exe} -m kb_python'
         except Exception:
-            # If importlib checks fail unexpectedly, fall through to the final error.
             pass
 
-    # Nothing found — raise a helpful error
     raise FileNotFoundError(
-        "Could not find the 'kb' executable on PATH or next to the current Python interpreter, "
-        "and neither 'kb' nor 'kb_python' modules are importable for `python -m` invocation. "
-        "Please ensure kb-python is installed in the active environment (e.g. activate your conda/venv), "
-        "or provide the absolute path to the 'kb' executable."
+        "Could not find the 'kb' executable on PATH and neither 'kb' nor "
+        "'kb_python' modules are importable. "
+        "Please install kb-python: pip install kb-python"
     )
 
 
-def _run_kb(cmd: List[str], env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None) -> None:
-    """
-    Run a kb command, streaming output to the console. Raises on non-zero exit.
-    """
-    # If _which_kb returned "python -m kb_python", split it
+def _run_kb_cmd(cmd: List[str], env: Optional[Dict[str, str]] = None,
+                cwd: Optional[str] = None) -> None:
+    """Run a kb command, splitting ``python -m`` prefixes when needed."""
     if isinstance(cmd[0], str) and ' ' in cmd[0]:
         first = shlex.split(cmd[0])
         cmd = first + cmd[1:]
+    run_cmd(cmd, env=env, cwd=cwd)
 
-    print(f"{Colors.CYAN}>> {' '.join(shlex.quote(c) for c in cmd)}{Colors.ENDC}")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=cwd,
-        env=env,
-        text=True,
-        bufsize=1
-    )
-    assert proc.stdout is not None
+
+def _resolve_parallel_fastq_dump() -> str:
+    """Resolve the 'parallel-fastq-dump' executable."""
     try:
-        for line in proc.stdout:
-            print(line, end='')
-    finally:
-        proc.stdout.close()
-    ret = proc.wait()
-    if ret != 0:
-        raise RuntimeError(f"kb command failed with exit code {ret}")
+        return resolve_executable("parallel-fastq-dump", auto_install=False)
+    except FileNotFoundError:
+        pass
 
+    python_exe = sys.executable or shutil.which('python3') or shutil.which('python')
+    if python_exe:
+        try:
+            if importlib.util.find_spec('parallel-fastq-dump') is not None:
+                return f'{python_exe} -m parallel-fastq-dump'
+        except Exception:
+            pass
 
-def _run_parallel_fastq_dump(cmd: List[str], env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None) -> None:
-    """
-    Run a parallel-fastq-dump command, streaming output to the console. Raises on non-zero exit.
-    """
-    print(f"{Colors.CYAN}>> {' '.join(shlex.quote(c) for c in cmd)}{Colors.ENDC}")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=cwd,
-        env=env,
-        text=True,
-        bufsize=1
+    raise FileNotFoundError(
+        "Could not find 'parallel-fastq-dump' on PATH. "
+        "Install via: conda install -c bioconda parallel-fastq-dump"
     )
-    assert proc.stdout is not None
-    try:
-        for line in proc.stdout:
-            print(line, end='')
-    finally:
-        proc.stdout.close()
-    ret = proc.wait()
-    if ret != 0:
-        raise RuntimeError(f"parallel-fastq-dump command failed with exit code {ret}")
 
 
 def _append_flag(cmd: List[str], flag: str, value: Optional[Union[str, int, float, bool]], as_bool: bool = False):
@@ -191,6 +122,17 @@ def _include_exclude_to_flags(include: Optional[List[Dict[str, str]]],
     return out
 
 
+@register_function(
+    aliases=['构建转录组索引', 'alignment ref', 'kb ref', 'kallisto bustools ref'],
+    category="alignment",
+    description="Build a kallisto|bustools-compatible reference index and transcript-to-gene map from FASTA/GTF resources for RNA-seq quantification.",
+    prerequisites={},
+    requires={},
+    produces={},
+    auto_fix='none',
+    examples=['ov.alignment.single.ref(index_path="index.idx", t2g_path="t2g.tsv", fasta_paths=["transcripts.fa"], gtf_paths=["genes.gtf"])'],
+    related=['alignment.count', 'alignment.STAR']
+)
 def ref(
     index_path: str,
     t2g_path: str,
@@ -224,19 +166,80 @@ def ref(
     **kwargs
 ) -> Dict[str, str]:
     """
-    Build kallisto index and transcript-to-gene mapping via `kb ref`.
-    Returns a dict with metadata and common output paths.
+    Build kallisto index and transcript-to-gene mapping files via ``kb ref``.
+
+    Parameters
+    ----------
+    index_path:str
+        Output path for generated kallisto index file.
+    t2g_path:str
+        Output path for transcript-to-gene mapping table.
+    fasta_paths:str|list[str]|None, optional
+        Input transcript/genome FASTA file(s) used to build the reference.
+    gtf_paths:str|list[str]|None, optional
+        Input GTF annotation file(s) aligned with ``fasta_paths``.
+    cdna_path:str|None, optional
+        Optional cDNA FASTA output path required by some workflows.
+    workflow:str, optional
+        kb workflow mode (for example ``standard``, ``nucleus``, ``lamanno``, ``kite``).
+    d:str|None, optional
+        Prebuilt reference bundle shortcut (``kb ref -d``).
+    k:int|None, optional
+        K-mer length for kallisto index construction.
+    threads:int, optional
+        Number of threads for ``kb`` execution.
+    overwrite:bool, optional
+        Whether to overwrite existing output files.
+    temp_dir:str, optional
+        Temporary directory root for kb intermediate files.
+    make_unique:bool, optional
+        Make feature IDs unique when duplicate names are detected.
+    include:list[dict[str,str]]|None, optional
+        Attribute filters to include specific transcript/gene records.
+    exclude:list[dict[str,str]]|None, optional
+        Attribute filters to exclude records.
+    dlist:str|None, optional
+        Decoy list file for selective-alignment workflows.
+    dlist_overhang:int, optional
+        Overhang length used when generating decoy targets.
+    aa:bool, optional
+        Enable amino-acid mode where supported by kb workflow.
+    max_ec_size:int|None, optional
+        Maximum equivalence-class size for index generation.
+    nucleus:bool, optional
+        Shortcut to switch from ``standard`` to ``nucleus`` workflow.
+    f2:str|None, optional
+        Secondary FASTA output/input path for nucleus/velocity workflows.
+    c1:str|None, optional
+        Spliced transcript capture output path for velocity workflows.
+    c2:str|None, optional
+        Intronic transcript capture output path for velocity workflows.
+    flank:int|None, optional
+        Flanking sequence length for selected workflows.
+    feature:str|None, optional
+        Feature FASTA path used by ``kite`` workflow.
+    no_mismatches:bool, optional
+        Disable mismatches for feature barcoding workflows.
+    distinguish:bool, optional
+        Distinguish overlapping features when supported by kb.
+    **kwargs
+        Additional kb flags passed through (for example ``kallisto``, ``bustools``, ``opt_off``).
+
+    Returns
+    -------
+    dict[str,str]
+        Metadata dictionary with workflow info and generated output paths.
     """
-    print(f"{Colors.BOLD}{Colors.HEADER}🚀 Starting ref workflow: {workflow}{Colors.ENDC}")
+    print(f"[kb ref] Starting ref workflow: {workflow}", flush=True)
 
     # If user sets nucleus=True but workflow left default, switch workflow accordingly
     if workflow == 'standard' and nucleus:
         workflow = 'nucleus'
 
-    _ensure_dir(os.path.dirname(index_path) or '.')
-    _ensure_dir(os.path.dirname(t2g_path) or '.')
+    ensure_dir(os.path.dirname(index_path) or '.')
+    ensure_dir(os.path.dirname(t2g_path) or '.')
 
-    kb = _which_kb()
+    kb = _resolve_kb()
     cmd: List[str] = [kb, 'ref']
 
     # Workflow
@@ -248,7 +251,7 @@ def ref(
         run_tmp = f"tmp-kb-{uuid4().hex}"
     else:
         run_tmp = temp_dir
-    print(f"{Colors.BLUE}    Using temporary directory: {run_tmp}{Colors.ENDC}")
+    print(f"[kb ref] Using temporary directory: {run_tmp}", flush=True)
     cmd.extend(['--tmp', run_tmp])
 
     # Common required outputs
@@ -282,7 +285,7 @@ def ref(
     # Build positional / workflow-specific arguments
     positional: List[str] = []
     if d is not None:
-        print(f"{Colors.BLUE}    Using pre-built reference: {d}{Colors.ENDC}")
+        print(f"[kb ref] Using pre-built reference: {d}", flush=True)
         cmd.insert(2, '-d')
         cmd.insert(3, d)
         if cdna_path:
@@ -341,14 +344,13 @@ def ref(
 
     cmd.extend(positional)
 
-    env = os.environ.copy()
-    # 可选：env['TMPDIR'] = run_tmp
+    env = build_env()
 
     try:
-        _run_kb(cmd, env=env)
-        print(f"{Colors.GREEN}✓ ref workflow completed!{Colors.ENDC}")
+        _run_kb_cmd(cmd, env=env)
+        print("[kb ref] ref workflow completed!", flush=True)
     except Exception as e:
-        print(f"{Colors.FAIL}✗ ref workflow failed: {e}{Colors.ENDC}", file=sys.stderr)
+        print(f"[kb ref] ref workflow failed: {e}", file=sys.stderr)
         raise
     finally:
         # Best-effort cleanup if we created a unique tmp path
@@ -372,6 +374,17 @@ def ref(
     return result  # type: ignore[return-value]
 
 
+@register_function(
+    aliases=['定量计数', 'alignment count', 'kb count', 'kallisto bustools count'],
+    category="alignment",
+    description="Quantify gene expression matrices from FASTQ data using a prebuilt kallisto|bustools reference and sequencing technology presets.",
+    prerequisites={'functions': ['ref']},
+    requires={},
+    produces={},
+    auto_fix='escalate',
+    examples=['ov.alignment.single.count(index_path="index.idx", t2g_path="t2g.tsv", technology="10XV3", fastq_paths=["R1.fastq.gz", "R2.fastq.gz"], output_path="./kb_out")'],
+    related=['alignment.ref', 'alignment.fqdump', 'alignment.fastp']
+)
 def count(
     index_path: str,
     t2g_path: str,
@@ -424,25 +437,116 @@ def count(
     **kwargs
 ) -> Dict[str, str]:
     """
-    Generate count matrix from single-cell FASTQ files via `kb count`.
-    Returns a dict with metadata and commonly generated output files if present.
+    Quantify expression matrices from FASTQ files via ``kb count``.
+
+    Parameters
+    ----------
+    index_path:str
+        Path to kallisto index produced by ``kb ref``.
+    t2g_path:str
+        Transcript-to-gene mapping table used for gene-level aggregation.
+    technology:str
+        Sequencing technology preset (for example ``10XV3``, ``BULK``).
+    fastq_paths:str|list[str]
+        One or more FASTQ file paths passed to kb count.
+    output_path:str, optional
+        Output directory for count matrices and intermediate files.
+    whitelist_path:str|None, optional
+        Optional custom barcode whitelist.
+    replacement_path:str|None, optional
+        Optional barcode replacement file.
+    threads:int, optional
+        Number of threads used by kb.
+    memory:str, optional
+        Memory request string passed to kb (for example ``2G``).
+    workflow:str, optional
+        kb workflow mode (``standard``, ``nucleus``, ``lamanno`` etc.).
+    overwrite:bool, optional
+        Whether to overwrite existing output directory contents.
+    temp_dir:str, optional
+        Temporary directory root for kb intermediate files.
+    tcc:bool, optional
+        Output transcript compatibility counts instead of gene matrix.
+    mm:bool, optional
+        Use memory-mapped mode when supported.
+    filter_barcodes:bool, optional
+        Enable barcode filtering (not valid for ``technology='BULK'``).
+    filter_threshold:int|None, optional
+        Barcode filter threshold used by bustools filtering.
+    loom:bool, optional
+        Export loom matrix.
+    loom_names:str|list[str]|None, optional
+        Custom loom row/column naming behavior.
+    h5ad:bool, optional
+        Export H5AD matrix output.
+    cellranger:bool, optional
+        Emit Cell Ranger-compatible output structure.
+    gene_names:bool, optional
+        Prefer gene symbols over IDs when possible.
+    report:bool, optional
+        Generate additional kb report files.
+    strand:str|None, optional
+        Strand option for long-read/technology-specific modes.
+    parity:str|None, optional
+        Read parity setting for specific technologies.
+    fragment_l:int|None, optional
+        Mean fragment length for bulk-like protocols.
+    fragment_s:int|None, optional
+        Fragment length standard deviation.
+    bootstraps:int|None, optional
+        Number of kallisto bootstrap rounds.
+    em:bool, optional
+        Enable EM optimization.
+    aa:bool, optional
+        Enable amino-acid mode where supported.
+    genomebam:bool, optional
+        Request genome BAM generation (version-dependent support).
+    inleaved:bool, optional
+        Treat reads as interleaved input.
+    batch_barcodes:bool, optional
+        Enable batched barcode handling.
+    exact_barcodes:bool, optional
+        Require exact barcode matching.
+    numreads:int|None, optional
+        Limit number of reads processed.
+    store_num:bool, optional
+        Store BUS record counts in output metadata.
+    long_read:bool, optional
+        Enable long-read mode.
+    threshold:float, optional
+        Long-read assignment threshold.
+    platform:str, optional
+        Long-read platform label (for example ``ONT``).
+    c1:str|None, optional
+        Spliced capture file path for velocity workflows.
+    c2:str|None, optional
+        Intronic capture file path for velocity workflows.
+    nucleus:bool, optional
+        Shortcut to switch workflow from ``standard`` to ``nucleus``.
+    **kwargs
+        Extra kb flags forwarded verbatim.
+
+    Returns
+    -------
+    dict[str,str]
+        Metadata dictionary including workflow settings and discovered output files.
     """
-    print(f"{Colors.BOLD}{Colors.HEADER}🚀 Starting count workflow: {workflow}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Technology: {technology}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Output directory: {output_path}{Colors.ENDC}")
+    print(f"[kb count] Starting count workflow: {workflow}", flush=True)
+    print(f"[kb count] Technology: {technology}", flush=True)
+    print(f"[kb count] Output directory: {output_path}", flush=True)
 
     # validate tcc/mm
     if tcc and mm:
-        print(f"{Colors.WARNING}! Both tcc and mm were set; kb CLI treats them as mutually exclusive. Preferring --tcc.{Colors.ENDC}")
+        print("[kb count] Warning: Both tcc and mm were set; preferring --tcc.", flush=True)
         mm = False
 
-    _ensure_dir(output_path)
+    ensure_dir(output_path)
 
     # Switch to nucleus workflow if requested
     if workflow == 'standard' and nucleus:
         workflow = 'nucleus'
 
-    kb = _which_kb()
+    kb = _resolve_kb()
     cmd: List[str] = [kb, 'count']
 
     # Workflow
@@ -454,7 +558,7 @@ def count(
         run_tmp = f"tmp-kb-{uuid4().hex}"
     else:
         run_tmp = temp_dir
-    print(f"{Colors.BLUE}    Using temporary directory: {run_tmp}{Colors.ENDC}")
+    print(f"[kb count] Using temporary directory: {run_tmp}", flush=True)
     cmd.extend(['--tmp', run_tmp])
 
     # Required basic args
@@ -525,7 +629,7 @@ def count(
     _append_flag(cmd, '--em', em, as_bool=True)
     _append_flag(cmd, '--aa', aa, as_bool=True)
     if genomebam:
-        print(f"{Colors.WARNING}! --genomebam is not supported in many kb versions and may error out.{Colors.ENDC}")
+        print("[kb count] Warning: --genomebam is not supported in many kb versions.", flush=True)
     _append_flag(cmd, '--genomebam', genomebam, as_bool=True)
     _append_flag(cmd, '--inleaved', inleaved, as_bool=True)
     _append_flag(cmd, '--batch-barcodes', batch_barcodes, as_bool=True)
@@ -585,14 +689,13 @@ def count(
     fastqs = [fastq_paths] if isinstance(fastq_paths, str) else list(fastq_paths)
     cmd.extend(fastqs)
 
-    env = os.environ.copy()
-    # 可选：env['TMPDIR'] = run_tmp
+    env = build_env()
 
     try:
-        _run_kb(cmd, env=env)
-        print(f"{Colors.GREEN}✓ count workflow completed!{Colors.ENDC}")
+        _run_kb_cmd(cmd, env=env)
+        print("[kb count] count workflow completed!", flush=True)
     except Exception as e:
-        print(f"{Colors.FAIL}✗ count workflow failed: {e}{Colors.ENDC}", file=sys.stderr)
+        print(f"[kb count] count workflow failed: {e}", file=sys.stderr)
         raise
     finally:
         if run_tmp.startswith('tmp-kb-') and os.path.isdir(run_tmp):
@@ -646,11 +749,11 @@ def analyze_10x_v3_data(
     """
     results: Dict[str, Dict[str, Union[str, int, bool]]] = {}
 
-    _ensure_dir(reference_output_dir)
-    _ensure_dir(analysis_output_dir)
+    ensure_dir(reference_output_dir)
+    ensure_dir(analysis_output_dir)
 
     if download_reference:
-        print(f"{Colors.BOLD}{Colors.HEADER}Step 1: Downloading human reference genome...{Colors.ENDC}")
+        print("[kb] Step 1: Downloading human reference genome...", flush=True)
         ref_result = ref(
             index_path=os.path.join(reference_output_dir, "index.idx"),
             t2g_path=os.path.join(reference_output_dir, "t2g.txt"),
@@ -659,14 +762,14 @@ def analyze_10x_v3_data(
             threads=threads_ref
         )
         results['reference'] = ref_result  # type: ignore[index]
-        print(f"{Colors.GREEN}✓ Reference genome download complete!{Colors.ENDC}\n")
+        print("[kb] Reference genome download complete!", flush=True)
         index_file = os.path.join(reference_output_dir, "index.idx")
         t2g_file = os.path.join(reference_output_dir, "t2g.txt")
     else:
         index_file = os.path.join(reference_output_dir, "index.idx")
         t2g_file = os.path.join(reference_output_dir, "t2g.txt")
 
-    print(f"{Colors.BOLD}{Colors.HEADER}Step 2: Performing count analysis...{Colors.ENDC}")
+    print("[kb] Step 2: Performing count analysis...", flush=True)
     count_result = count(
         fastq_paths=fastq_files,
         index_path=index_file,
@@ -677,14 +780,14 @@ def analyze_10x_v3_data(
         **kwargs
     )
     results['count'] = count_result  # type: ignore[index]
-    print(f"{Colors.GREEN}✓ Count analysis complete!{Colors.ENDC}\n")
+    print("[kb] Count analysis complete!", flush=True)
 
     return results  # type: ignore[return-value]
 
 
 @register_function(
     aliases=["parallel_fastq_dump", "并行下载SRA", "pfastq_dump"],
-    category="utils",
+    category="alignment",
     description="Download SRA data in parallel using parallel-fastq-dump",
     examples=[
         "# Download SRA data with 4 threads",
@@ -710,20 +813,31 @@ def parallel_fastq_dump(
     This function wraps the parallel-fastq-dump tool to download sequencing data
     from NCBI SRA (Sequence Read Archive) in parallel for faster downloads.
 
-    Arguments:
-        sra_id: SRA accession ID (e.g., 'SRR2244401').
-        threads: Number of threads to use for parallel download. Default: 1.
-        outdir: Output directory for downloaded FASTQ files. Default: '.'.
-        tmpdir: Temporary directory for intermediate files. Default: None.
-        min_spot_id: Minimum spot ID to download. Default: 1.
-        max_spot_id: Maximum spot ID to download. Default: None (all spots).
-        split_files: Split paired-end reads into separate files. Default: False.
-        gzip: Compress output files with gzip. Default: False.
-        **kwargs: Additional arguments to pass to parallel-fastq-dump.
+    Parameters
+    ----------
+    sra_id:str
+        SRA accession ID (for example ``SRR2244401``).
+    threads:int, optional
+        Number of parallel threads used by ``parallel-fastq-dump``.
+    outdir:str, optional
+        Output directory for downloaded FASTQ files.
+    tmpdir:str|None, optional
+        Temporary directory for chunk/intermediate files.
+    min_spot_id:int, optional
+        Minimum SRA spot ID to download.
+    max_spot_id:int|None, optional
+        Maximum SRA spot ID to download. ``None`` downloads all remaining spots.
+    split_files:bool, optional
+        Split paired-end reads into separate ``*_1``/``*_2`` FASTQ files.
+    gzip:bool, optional
+        Compress output FASTQ files using gzip.
+    **kwargs
+        Additional flags passed through to ``parallel-fastq-dump``.
 
-    Returns:
-        result: Dictionary containing download metadata including sra_id, threads,
-                outdir, and output file paths.
+    Returns
+    -------
+    dict[str,str|int]
+        Download metadata including input parameters and discovered output FASTQ paths.
 
     Examples:
         >>> import omicverse as ov
@@ -746,22 +860,15 @@ def parallel_fastq_dump(
         ...     gzip=True
         ... )
     """
-    print(f"{Colors.BOLD}{Colors.HEADER}🚀 Starting parallel-fastq-dump for {sra_id}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Threads: {threads}{Colors.ENDC}")
-    print(f"{Colors.CYAN}    Output directory: {outdir}{Colors.ENDC}")
+    print(f"[parallel-fastq-dump] Starting for {sra_id}", flush=True)
+    print(f"[parallel-fastq-dump] Threads: {threads}", flush=True)
+    print(f"[parallel-fastq-dump] Output directory: {outdir}", flush=True)
 
     # Ensure output directory exists
-    _ensure_dir(outdir)
+    ensure_dir(outdir)
 
     # Check if parallel-fastq-dump is available
-    try:
-        pfastq_dump = _which_parallel_fastq_dump()
-    except Exception as e:
-        print(f"{Colors.FAIL}✗ parallel-fastq-dump not found: {e}{Colors.ENDC}", file=sys.stderr)
-        raise FileNotFoundError(
-            "Could not find 'parallel-fastq-dump' executable on PATH. "
-            "Please install it using: conda install -c bioconda parallel-fastq-dump"
-        )
+    pfastq_dump = _resolve_parallel_fastq_dump()
 
     # Build command
     cmd: List[str] = [pfastq_dump]
@@ -794,19 +901,16 @@ def parallel_fastq_dump(
             _append_flag(cmd, flag, value)
 
     # Ensure the directory containing parallel-fastq-dump is in PATH
-    # so that sra-stat and other SRA tools can be found
-    env = os.environ.copy()
-    pfastq_dump_dir = os.path.dirname(pfastq_dump) if not ' ' in pfastq_dump else os.path.dirname(shlex.split(pfastq_dump)[-1])
+    env = build_env()
+    pfastq_dump_dir = os.path.dirname(pfastq_dump) if ' ' not in pfastq_dump else os.path.dirname(shlex.split(pfastq_dump)[-1])
     if pfastq_dump_dir and os.path.isdir(pfastq_dump_dir):
-        # Prepend the directory to PATH
         env['PATH'] = pfastq_dump_dir + os.pathsep + env.get('PATH', '')
-        print(f"{Colors.BLUE}    Added to PATH: {pfastq_dump_dir}{Colors.ENDC}")
 
     try:
-        _run_parallel_fastq_dump(cmd, env=env)
-        print(f"{Colors.GREEN}✓ parallel-fastq-dump completed successfully!{Colors.ENDC}")
+        run_cmd(cmd, env=env)
+        print("[parallel-fastq-dump] Completed successfully!", flush=True)
     except Exception as e:
-        print(f"{Colors.FAIL}✗ parallel-fastq-dump failed: {e}{Colors.ENDC}", file=sys.stderr)
+        print(f"[parallel-fastq-dump] Failed: {e}", file=sys.stderr)
         raise
 
     # Build result dictionary
@@ -837,48 +941,9 @@ def parallel_fastq_dump(
     return result  # type: ignore[return-value]
 
 
-def _which_parallel_fastq_dump() -> str:
-    """
-    Resolve the 'parallel-fastq-dump' executable.
-    """
-
-    # 1) Look for 'parallel-fastq-dump' on PATH first
-    parallel_fastq_dump = shutil.which('parallel-fastq-dump')
-    if parallel_fastq_dump:
-        return parallel_fastq_dump
-
-    # 2) Try to find a 'parallel-fastq-dump' executable next to the current Python executable
-    #    (handles cases where the console script is installed into the env's bin/)
-    if sys.executable:
-        exe_dir = os.path.dirname(sys.executable)
-        for candidate in ('parallel-fastq-dump', 'parallel-fastq-dump.exe'):
-            cand_path = os.path.join(exe_dir, candidate)
-            if os.path.isfile(cand_path) and os.access(cand_path, os.X_OK):
-                return cand_path
-
-    # 3) Fall back to using `python -m <module>` but only if the module exists.
-    python_exe = sys.executable or shutil.which('python3') or shutil.which('python')
-    if python_exe:
-        try:
-            # Prefer the 'parallel-fastq-dump' module (if present) so we run `python -m parallel-fastq-dump`
-            if importlib.util.find_spec('parallel-fastq-dump') is not None:
-                return f'{python_exe} -m parallel-fastq-dump'
-        except Exception:
-            # If importlib checks fail unexpectedly, fall through to the final error.
-            pass
-
-    # Nothing found — raise a helpful error
-    raise FileNotFoundError(
-        "Could not find the 'parallel-fastq-dump' executable on PATH or next to the current Python interpreter, "
-        "and neither 'parallel-fastq-dump' modules are importable for `python -m` invocation. "
-        "Please ensure parallel-fastq-dump is installed in the active environment (e.g. activate your conda/venv), "
-        "or provide the absolute path to the 'parallel-fastq-dump' executable."
-    )
-
-# Optional namespace similar to your previous code
+# Optional namespace for convenient access
 import types
 single = types.SimpleNamespace()
-single.Colors = Colors
 single.ref = ref
 single.count = count
 single.analyze_10x_v3_data = analyze_10x_v3_data

@@ -25,8 +25,14 @@ class HighPerformanceAnndataAdaptor:
     and FlatBuffers serialization for fast client-server communication
     """
 
-    def __init__(self, data_path: str, chunk_size: int = 50000):
-        self.data_path = data_path
+    def __init__(self, data_path_or_adata, chunk_size: int = 50000):
+        """
+        Initialize adaptor with either a file path or an AnnData object
+
+        Args:
+            data_path_or_adata: Either a string file path or an AnnData object
+            chunk_size: Chunk size for data operations
+        """
         self.chunk_size = chunk_size
         self.adata = None
         self.n_obs = 0
@@ -38,6 +44,16 @@ class HighPerformanceAnndataAdaptor:
         self._expression_cache = {}
         self._embedding_cache = {}
 
+        # Check if input is AnnData object or file path
+        if isinstance(data_path_or_adata, str):
+            self.data_path = data_path_or_adata
+            self._from_file = True
+        else:
+            # Assume it's an AnnData object
+            self.data_path = None
+            self._from_file = False
+            self.adata = data_path_or_adata
+
         # Load data
         self._load_data()
         self._build_indexes()
@@ -45,8 +61,21 @@ class HighPerformanceAnndataAdaptor:
     def _load_data(self):
         """Load AnnData with optimizations"""
         try:
-            logger.info(f"Loading data from {self.data_path}")
-            self.adata = sc.read_h5ad(self.data_path)
+            if self._from_file:
+                # Load from file path
+                logger.info(f"Loading data from {self.data_path}")
+                self.adata = sc.read_h5ad(self.data_path)
+            else:
+                # Use existing AnnData object
+                logger.info(f"Loading data from AnnData object with n_obs × n_vars = {self.adata.n_obs} × {self.adata.n_vars}")
+                # Log basic info
+                obs_info = ', '.join([f"'{col}'" for col in list(self.adata.obs.columns)[:5]])
+                var_info = ', '.join([f"'{col}'" for col in list(self.adata.var.columns)[:5]])
+                obsm_info = ', '.join([f"'{key}'" for key in list(self.adata.obsm.keys())[:5]])
+                logger.info(f"    obs: {obs_info}")
+                logger.info(f"    var: {var_info}")
+                logger.info(f"    obsm: {obsm_info}")
+
             self.n_obs = self.adata.n_obs
             self.n_vars = self.adata.n_vars
             logger.info(f"Loaded data: {self.n_obs} cells, {self.n_vars} genes")
@@ -162,9 +191,23 @@ class HighPerformanceAnndataAdaptor:
         if embedding_name == 'random' or embedding_name == 'X_random':
             coords = self._get_random_embedding()
         else:
-            embedding_key = f'X_{embedding_name}' if not embedding_name.startswith('X_') else embedding_name
-            if embedding_key not in self.adata.obsm:
-                raise KeyError(f"Embedding '{embedding_name}' not found")
+            # Smart key resolution: try direct → X_-prefixed → stripped → case-insensitive
+            if embedding_name in self.adata.obsm:
+                embedding_key = embedding_name
+            elif f'X_{embedding_name}' in self.adata.obsm:
+                embedding_key = f'X_{embedding_name}'
+            else:
+                # Case-insensitive fallback
+                name_lower = embedding_name.lower()
+                embedding_key = next(
+                    (k for k in self.adata.obsm
+                     if k.lower() == name_lower
+                     or k.lower() == f'x_{name_lower}'
+                     or (k.startswith('X_') and k[2:].lower() == name_lower)),
+                    None
+                )
+                if embedding_key is None:
+                    raise KeyError(f"Embedding '{embedding_name}' not found in obsm")
             coords = self.adata.obsm[embedding_key]
 
         # Convert to DataFrame for consistent serialization
@@ -339,12 +382,19 @@ class HighPerformanceAnndataAdaptor:
         logger.info("Data adaptor closed")
 
     def _get_random_embedding(self):
-        """Generate or return cached random 2D embedding for fallback visualization."""
+        """Return random 2D embedding, preferring the persisted adata.obsm['X_random']."""
         if 'X_random' in self._embedding_cache:
             return self._embedding_cache['X_random']
-        # Seed based on dataset path for determinism
+        # Use the version stored in adata.obsm if available (persists across tool runs)
+        if hasattr(self, 'adata') and 'X_random' in self.adata.obsm:
+            coords = np.asarray(self.adata.obsm['X_random'], dtype=np.float64)
+            self._embedding_cache['X_random'] = coords
+            return coords
+        # Fallback: generate deterministic random coords and store in obsm
         seed = abs(hash(self.data_path)) % (2**32 - 1)
         rng = np.random.RandomState(seed)
         coords = rng.rand(self.n_obs, 2)
+        if hasattr(self, 'adata'):
+            self.adata.obsm['X_random'] = coords.astype(np.float32)
         self._embedding_cache['X_random'] = coords
         return coords

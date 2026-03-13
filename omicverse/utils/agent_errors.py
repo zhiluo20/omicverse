@@ -15,10 +15,11 @@ class OVAgentError(Exception):
 
 
 class WorkflowNeedsFallback(OVAgentError):
-    """Registry workflow determined the task needs the full skills workflow.
+    """Deprecated: kept for backward compatibility only.
 
-    This is a *signal*, not a bug.  ``run_async`` catches it and falls back
-    to Priority 2 without logging a traceback.
+    Previously used as a signal for the legacy Priority 1/2 fallback system,
+    which has been removed. The agentic tool-calling loop is now the only
+    execution architecture.
     """
     pass
 
@@ -53,3 +54,17 @@ class ExecutionError(OVAgentError):
 class SandboxDeniedError(ExecutionError):
     """Notebook / sandbox execution failed or was denied."""
     pass
+
+
+class SecurityViolationError(SandboxDeniedError):
+    """Pre-execution security scan detected dangerous code patterns.
+
+    Attributes
+    ----------
+    violations : list
+        List of ``SecurityViolation`` objects describing each finding.
+    """
+
+    def __init__(self, message: str, *, violations: list | None = None) -> None:
+        super().__init__(message)
+        self.violations = violations or []

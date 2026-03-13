@@ -10,7 +10,7 @@ import functools
 import operator
 from typing import Any
 from ._palette import palette_28, palette_56
-from ..utils.registry import register_function
+from .._registry import register_function
 
 _VarNames = Union[str, Sequence[str]]
 
@@ -395,7 +395,21 @@ def dotplot(
         else:
             # Use the order as they appear in gene_groups
             used_groups = list(dict.fromkeys(gene_groups))
-        
+
+        # Ensure all used_groups have colors in color_dict
+        missing_in_used = [g for g in used_groups if g not in color_dict]
+        if missing_in_used:
+            # Determine which palette to use based on total unique groups
+            all_unique_groups = list(dict.fromkeys(gene_groups))
+            if len(all_unique_groups) <= 28:
+                palette = palette_28
+            else:
+                palette = palette_56
+            # Add missing colors
+            start_idx = len(color_dict)
+            for i, group in enumerate(missing_in_used):
+                color_dict[group] = palette[(start_idx + i) % len(palette)]
+
         used_color_dict = {k: color_dict[k] for k in used_groups}
         m.add_top(
             mp.Colors(gene_groups, palette=used_color_dict),
@@ -456,14 +470,44 @@ def rank_genes_groups_df(
     log2fc_min: float | None = None,
 ) -> pd.DataFrame:
     """Return a DataFrame with the results of rank_genes_groups."""
+    import numpy as np
+
+    result = adata.uns[key]
+
+    # Resolve group index (needed for plain 2D arrays stored by cosg)
+    names_data = result.get("names")
+    group_index: int | None = None
+    if names_data is not None:
+        if isinstance(names_data, pd.DataFrame):
+            cols = names_data.columns.tolist()
+        elif hasattr(names_data, "dtype") and names_data.dtype.names:
+            cols = list(names_data.dtype.names)
+        else:
+            cols = []
+        if group in cols:
+            group_index = cols.index(group)
+
+    def _extract(data, grp: str, gi: int | None):
+        """Extract the column for `grp` from various storage formats."""
+        if isinstance(data, pd.DataFrame):
+            return data[grp].values if grp in data.columns else None
+        if hasattr(data, "dtype") and data.dtype.names:
+            return data[grp] if grp in data.dtype.names else None
+        # Plain 2D ndarray — use positional index
+        if gi is not None and isinstance(data, np.ndarray) and data.ndim == 2:
+            return data[:, gi]
+        return None
+
     d = pd.DataFrame()
     for k in ['names', 'scores', 'logfoldchanges', 'pvals', 'pvals_adj']:
-        if k in adata.uns[key]:
-            d[k] = pd.DataFrame(adata.uns[key][k])[group]
-    
-    if log2fc_min is not None:
+        if k in result:
+            col = _extract(result[k], group, group_index)
+            if col is not None:
+                d[k] = col
+
+    if log2fc_min is not None and 'logfoldchanges' in d.columns:
         d = d[d['logfoldchanges'].abs() > log2fc_min]
-    
+
     return d
 
 def _get_values_to_plot(
@@ -486,6 +530,21 @@ def _get_values_to_plot(
     
     return values
 
+@register_function(
+    aliases=["差异基因点图", "rank_genes_dotplot", "DEG点图", "差异基因可视化"],
+    category="pl",
+    description="Create dot plot from rank_genes_groups differential expression results",
+    examples=[
+        "# After running rank_genes_groups, plot top 5 marker genes per cluster",
+        "ov.pp.find_markers(adata, groupby='leiden')",
+        "ov.pl.rank_genes_groups_dotplot(adata, n_genes=5, groupby='leiden')",
+        "# Plot with logfoldchange filter",
+        "ov.pl.rank_genes_groups_dotplot(adata, n_genes=5, groupby='leiden', min_logfoldchange=1.0)",
+        "# Select specific groups",
+        "ov.pl.rank_genes_groups_dotplot(adata, groups=['0', '1', '2'], n_genes=5)",
+    ],
+    related=["pl.markers_dotplot", "pl.dotplot", "single.find_markers"]
+)
 def rank_genes_groups_dotplot(
     adata: AnnData,
     plot_type: str = "dotplot",
@@ -679,3 +738,116 @@ def rank_genes_groups_dotplot(
     elif not show:
         return _pl
     return None
+
+
+@register_function(
+    aliases=["标记基因点图", "markers_dotplot", "marker点图", "marker_dotplot", "markers_dot"],
+    category="pl",
+    description="Create a dot plot from marker genes — a clean drop-in replacement for rank_genes_groups_dotplot",
+    examples=[
+        "# Basic usage after find_markers",
+        "ov.single.find_markers(adata, groupby='leiden')",
+        "ov.pl.markers_dotplot(adata, groupby='leiden')",
+        "",
+        "# Custom gene count and colormap",
+        "ov.pl.markers_dotplot(adata, groupby='leiden', n_genes=5, cmap='RdBu_r')",
+        "",
+        "# Use a custom key (e.g. from cosg with key_added)",
+        "ov.pl.markers_dotplot(adata, groupby='leiden', key='leiden_cosg', n_genes=3)",
+        "",
+        "# Standard-scale by variable and disable dendrogram",
+        "ov.pl.markers_dotplot(adata, groupby='leiden', standard_scale='var',",
+        "                      dendrogram=False, n_genes=5)",
+    ],
+    related=["pl.rank_genes_groups_dotplot", "pl.dotplot", "single.find_markers", "single.get_markers"],
+)
+def markers_dotplot(
+    adata: AnnData,
+    groupby: Optional[str] = None,
+    key: Optional[str] = None,
+    n_genes: int = 5,
+    groups: Optional[Union[str, Sequence[str]]] = None,
+    standard_scale: Optional[Literal["var", "group"]] = "var",
+    cmap: Union[Colormap, str, None] = "Spectral_r",
+    dendrogram: bool = False,
+    min_logfoldchange: Optional[float] = None,
+    use_raw: Optional[bool] = None,
+    layer: Optional[str] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    show: Optional[bool] = None,
+    save: Optional[Union[str, bool]] = None,
+    return_fig: bool = False,
+    **kwds,
+) -> Optional[Any]:
+    r"""Dot plot of marker genes — clean drop-in for :func:`rank_genes_groups_dotplot`.
+
+    Wraps :func:`rank_genes_groups_dotplot` with more convenient defaults:
+    ``standard_scale='var'``, ``cmap='Spectral_r'``, and ``dendrogram=False``.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix.
+    groupby : str or None, default=None
+        Key in ``adata.obs`` to group by. If ``None``, uses
+        ``adata.uns[key]['params']['groupby']``.
+    key : str or None, default=None
+        Key in ``adata.uns`` containing ``rank_genes_groups`` results.
+    n_genes : int, default=5
+        Number of top marker genes shown per group.
+    groups : str or Sequence[str] or None, default=None
+        Subset of groups to include.
+    standard_scale : {'var', 'group'} or None, default='var'
+        Standardization mode for color values.
+    cmap : Colormap or str or None, default='Spectral_r'
+        Colormap for mean expression.
+    dendrogram : bool, default=False
+        Whether to include a dendrogram.
+    min_logfoldchange : float or None, default=None
+        Minimum log-fold-change threshold for marker inclusion.
+    use_raw : bool or None, default=None
+        Whether to use ``adata.raw`` values.
+    layer : str or None, default=None
+        Layer used for expression values.
+    figsize : tuple[float, float] or None, default=None
+        Figure size in inches.
+    show : bool or None, default=None
+        Whether to display the figure.
+    save : str or bool or None, default=None
+        Save option/path.
+    return_fig : bool, default=False
+        Whether to return the generated plot object.
+    **kwds
+        Additional keyword arguments forwarded to :func:`dotplot`.
+
+    Returns:
+        Figure or axes object when ``return_fig=True`` or ``show=False``;
+        ``None`` otherwise.
+
+    Examples:
+        >>> import omicverse as ov
+        >>> ov.single.find_markers(adata, groupby='leiden', method='cosg')
+        >>> ov.pl.markers_dotplot(adata, groupby='leiden', n_genes=5)
+        >>> # Using wilcoxon results stored under a different key
+        >>> ov.single.find_markers(adata, groupby='leiden', method='wilcoxon',
+        ...                        key_added='wilcoxon_markers')
+        >>> ov.pl.markers_dotplot(adata, groupby='leiden', key='wilcoxon_markers')
+    """
+    return rank_genes_groups_dotplot(
+        adata,
+        groups=groups,
+        n_genes=n_genes,
+        groupby=groupby,
+        key=key,
+        standard_scale=standard_scale,
+        cmap=cmap,
+        dendrogram=dendrogram,
+        min_logfoldchange=min_logfoldchange,
+        use_raw=use_raw,
+        layer=layer,
+        figsize=figsize,
+        show=show,
+        save=save,
+        return_fig=return_fig,
+        **kwds,
+    )

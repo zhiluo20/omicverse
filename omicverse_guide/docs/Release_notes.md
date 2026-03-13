@@ -636,32 +636,230 @@ Added and fixed the `anndata-rs` to support million size's datasets (#336)
 
 ## v 1.7.9
 
+Implemented **smart lazy loading system** that dramatically reduces `import omicverse` time by **85.6x** (from ~16.57s to ~0.19s).
+Enhanced RNA-seq alignment workflow with comprehensive toolkit for FASTQ processing and counting.
+Optimized dataset management with nested directory creation for better organization.
+
+### Performance Optimization
+
+**Lazy Loading System**:
+- Implemented module-level lazy loading using `__getattr__` mechanism for all major modules
+- Added attribute-level lazy loading for frequently-used functions (read, palette, Agent, etc.)
+- Introduced intelligent caching system to ensure instant access after first load
+- Reduced initial import time from **16.57 seconds to 0.19 seconds** (85.6x speedup)
+- Maintained full backward compatibility - all existing code works without modification
+- Preserved complete IDE support with tab completion via `__dir__()` implementation
+- Fixed circular import issues by delaying settings module initialization
+- **MkDocs API documentation generation fully compatible** with lazy loading
+
+**Benefits for Users**:
+- ⚡ Instant startup for Jupyter notebooks and scripts
+- 🎯 Load only what you use - modules imported on first access
+- 💾 Reduced memory footprint for simple tasks
+- 🔄 Second access is cached and instant (< 0.001s)
+
+### Alignment Module
+
+**New Comprehensive RNA-seq Alignment Toolkit**:
+
+Added complete end-to-end workflow for processing raw sequencing data:
+
+- **`ov.alignment.prefetch`**: Download SRA datasets from NCBI with built-in retry logic
+- **`ov.alignment.fqdump`**: Convert SRA to FASTQ format with parallel processing support
+- **`ov.alignment.parallel_fastq_dump`**: High-performance parallel FASTQ extraction
+- **`ov.alignment.fastp`**: Quality control and adapter trimming for FASTQ files
+- **`ov.alignment.STAR`**: RNA-seq alignment using STAR aligner with customizable parameters
+- **`ov.alignment.featureCount`**: Gene-level read counting (renamed from `count` to avoid conflicts)
+- **`ov.alignment.single`**: One-command scRNA-seq alignment with kb-python (kallisto|bustools)
+- **`ov.alignment.ref`**: Build kallisto|bustools reference index for alignment
+- **`ov.alignment.count`**: Quantify gene expression from aligned reads
+
+**Key Features**:
+- Unified API for both bulk RNA-seq (STAR + featureCount) and scRNA-seq (kb-python) workflows
+- Built-in support for RNA velocity analysis with kb-python
+- Parallel processing capabilities for faster data conversion
+- Automatic handling of paired-end and single-end reads
+- Technology-specific filtering for bulk vs single-cell data
+- Integration with SRA toolkit for seamless data download
+
+**Example Workflow**:
+```python
+# Download and process bulk RNA-seq
+ov.alignment.prefetch('SRR1234567', output_dir='./data')
+ov.alignment.fqdump('SRR1234567', output_dir='./fastq')
+ov.alignment.fastp('sample_1.fastq.gz', 'sample_2.fastq.gz', output_prefix='clean')
+ov.alignment.STAR(fastq1='clean_1.fastq.gz', fastq2='clean_2.fastq.gz',
+                  genome_dir='./genome', output_prefix='aligned')
+ov.alignment.featureCount(bam='aligned.bam', annotation='genes.gtf', output='counts.txt')
+
+# Or use one-command scRNA-seq alignment
+ov.alignment.single(
+    fastq=['read1.fastq.gz', 'read2.fastq.gz'],
+    index='./kb_index',
+    output_dir='./kb_output',
+    technology='10xv3'
+)
+```
+
 ### PP Module
-- Fixed an HVG issue on `ov.pp.preprocess`.
+- Fixed an HVG (Highly Variable Genes) selection issue in `ov.pp.preprocess`
+- Improved preprocessing pipeline stability and accuracy
+- Refactored PCA implementation to utilize `torch_pca` for GPU acceleration (replacing TorchDR)
+- Enhanced support for sparse matrices in PCA computation
+- Updated PCA embedding basis from `X_pca` to `PCA` for clarity and consistency
+- Improved error handling with try-except blocks in PCA computation
+- Fixed PCA GPU mode support with sparse matrices to avoid memory errors
 
 ### Single Module
-- Added `CONCORD` to integrate the single-cell data in `ov.single.batch_correction`
+- Added `CONCORD` method to `ov.single.batch_correction` for single-cell data integration
+- Enhanced batch correction capabilities with state-of-the-art algorithm
+- **Fixed critical performance issue in pySCENIC**: Reverted inefficient correlation calculation optimization that caused memory issues and slowdowns in scRNA-seq data
+- Removed misleading warnings about dropout genes in SCENIC correlation calculations
+- Restored memory-efficient pairwise correlation computation (prevents OOM with >20k genes)
+- SCENIC now uses original approach: calculate correlations only for specific TF-target pairs instead of creating full gene×gene matrices
+- Added `ov.single.find_markers` for unified marker gene identification supporting five methods: `cosg`, `t-test`, `t-test_overestim_var`, `wilcoxon`, and `logreg`; statistical methods are natively ported from scanpy with no scanpy runtime dependency and numerically consistent results (rtol=1e-4)
+- Added `ov.single.get_markers` to extract top marker genes from results as a `DataFrame` or `dict`, with support for single/multiple cluster filtering and optional filtering by `min_logfoldchange`, `min_score`, and `min_pval_adj`; output includes `pct_group` and `pct_rest` columns showing cell expression proportions within and outside each cluster
 
 ### Space Module
-- Added `FlashDeconv` to perform deconvolution in Visium profile.
-- Added `Banksy` clustering method and update documentation
+- Added `FlashDeconv` for fast, GPU-free deconvolution in Visium spatial transcriptomics
+- Added `Banksy` clustering method for spatial domain identification
+- Updated spatial analysis documentation with new clustering approaches
 
 ### Web Module
-- Added `Omicverse-Notebook` and `Omicverse-Web` to analysis data without code.
+- Launched `Omicverse-Notebook` for browser-based interactive analysis without local installation
+- Launched `Omicverse-Web` for web-based data analysis without coding requirements
+- Democratized bioinformatics analysis for researchers without programming background
 
 ### Agent Module
-- Added `ov.Agent` to perform the analysis using LLM.
+- Enhanced `ov.Agent` with improved natural language processing for data analysis
+- Expanded LLM provider support and model selection
+- Optimized code generation and execution pipeline
 
 ### Pl Module
-- Enhanced categorical legend handling for scatterplot embeddings, including `legend_loc='on data'`.
+- Enhanced categorical legend handling for scatterplot embeddings
+- Added `legend_loc='on data'` option for direct annotation on plots
+- Improved visualization clarity for complex datasets
+- Added `ov.pl.markers_dotplot` as a cleaner drop-in for `rank_genes_groups_dotplot` with improved defaults (`standard_scale='var'`, `cmap='Spectral_r'`, `dendrogram=False`)
+- Fixed `KeyError` in `rank_genes_groups_df` when cluster names are numeric strings (e.g., leiden `'0'`, `'1'`); now correctly handles structured arrays, DataFrames, and plain 2D arrays from all marker methods
 
 ### Datasets Module
-- Added dataset URLs and expanded data downloading utilities.
-- Improved dataset utilities and refreshed download behaviors.
+- Added comprehensive dataset URLs for easier data access
+- Expanded data downloading utilities with progress tracking
+- **Fixed dataset download to create nested target directories automatically**
+- Improved dataset utilities with better error handling
+- Refreshed download behaviors for more reliable data fetching
 
 ### Docs
-- Strengthened data handling notes in dotplot and DEG analysis.
-- Updated the scTour clustering tutorial and release notes.
+- Strengthened data handling documentation in dotplot and DEG analysis tutorials
+- Updated the scTour clustering tutorial with latest best practices
+- Added comprehensive release notes for v1.7.9
+- Enhanced alignment module documentation with end-to-end workflows
 
+### Bug Fixes
+- Resolved circular import issues between `_settings` and `utils` modules
+- Fixed compatibility issues with latest package versions (zarr, pandas, etc.)
+- Improved error handling in parallel processing functions
 
+### Single Module
+**Enhanced DEG Analysis with Expression Percentages**: Added cell expression percentage information to differential expression results
+
+- Added `pct_ctrl` column showing percentage of cells expressing each gene in control group (0-100%)
+- Added `pct_test` column showing percentage of cells expressing each gene in test group (0-100%)
+- Added `pct_diff` column showing the difference in expression percentage (pct_test - pct_ctrl)
+- Works with all DEG methods: `wilcoxon`, `t-test`, and `memento-de`
+- Enables better marker gene identification by filtering genes based on expression prevalence
+- Similar to dotplot circle size information, helps identify genes with widespread vs. sparse expression patterns
+
+**Example Usage**:
+```python
+deg_obj = ov.single.DEG(adata, condition='condition',
+                        ctrl_group='Control', test_group='Treatment')
+deg_obj.run(celltype_key='cell_label', celltype_group=['T_cells'])
+results = deg_obj.get_results()
+# Now includes pct_ctrl, pct_test, pct_diff columns
+```
+
+### Compatibility
+**NumPy 2.0 Compatibility**: Fixed all NPY201 compatibility issues to ensure seamless support for both NumPy 1.x and 2.x
+
+**Fixed Issues (31 total)**:
+
+1. **`np.in1d` → `np.isin`** (9 instances)
+   - `omicverse/bulk/_dynamicTree.py`: 3 instances (lines 697, 741)
+   - `omicverse/single/_cosg.py`: 1 instance (line 77)
+   - `omicverse/external/GNTD/_preprocessing.py`: 2 instances
+   - `omicverse/external/scdiffusion/guided_diffusion/cell_datasets_WOT.py`: 1 instance
+   - Other external modules: 2 instances
+
+2. **`np.row_stack` → `np.vstack`** (13 instances)
+   - `omicverse/external/CAST/CAST_Projection.py`: 2 instances
+   - `omicverse/external/CAST/visualize.py`: 2 instances
+   - `omicverse/external/scSLAT/viz/multi_dataset.py`: multiple instances
+   - `omicverse/single/_mdic3.py`: 1 instance
+
+3. **`np.product` → `np.prod`** (4 instances)
+   - `omicverse/external/umap_pytorch/model.py`: 2 instances
+   - `omicverse/external/umap_pytorch/modules.py`: 2 instances
+
+4. **`np.trapz` compatibility wrapper** (2 instances)
+   - Added compatibility wrapper in:
+     - `omicverse/external/VIA/plotting_via.py`
+     - `omicverse/external/VIA/plotting_via_ov.py`
+   - Uses `numpy.trapezoid` (NumPy 2.0+) with fallback to `numpy.trapz` (NumPy 1.x)
+
+**Backward Compatibility**:
+- ✅ All changes maintain full backward compatibility with NumPy 1.x (1.13+)
+- ✅ `np.isin` available since NumPy 1.13
+- ✅ `np.vstack` available in all NumPy versions
+- ✅ `np.prod` available in all NumPy versions
+- ✅ Custom compatibility wrapper handles `trapz`/`trapezoid` transition
+
+## v 1.7.10
+
+### Scope
+- This release note summarizes changes from commit `cd3d151` (version set to `1.7.10rc1`) to current `HEAD`.
+- Total code delta in this window: `252 files changed`, `+46,992 / -9,752`.
+
+### Agent & Runtime
+- Upgraded `ov.Agent` architecture to modern agentic tool-calling workflows with subagent delegation (v4/v5 evolution).
+- Improved GPT-5.2 robustness, response parsing, and backend error handling.
+- Added harness runtime components for execution contracts, tool catalog, runtime state, tracing, and cleanup policies.
+- Strengthened sandbox behavior with restricted import controls for internal modules.
+- Added web bridge and session-level execution improvements for agent workflows.
+
+### New Modules
+- Added `omicverse.biocontext` for biomedical knowledge queries via BioContext MCP tooling.
+- Added `omicverse.fm` (foundation-model adapters, routing, registry, and API).
+- Added structured `omicverse.io` namespaces for general/single/bulk/spatial I/O paths.
+- Added `omicverse.jarvis` multi-channel bot framework (Feishu/QQ/Telegram) with bridge support.
+
+### Core OmicVerse Improvements
+- Continued enhancements across `pp`, `pl`, `single`, `space`, and `utils` modules.
+- Fixed circular import between preprocessing utility internals (`_utils.py` and `_scale.py` path).
+- Added/updated function-level metadata and documentation quality in key analysis modules (preprocessing, annotation, trajectory, spatial, datasets, bulk).
+- Extended dataset utilities with new signature resources and improved loading pathways.
+
+### Registry & Help System
+- Improved registry behavior and module import exposure in package entrypoints.
+- Enhanced function/class registration metadata coverage for agent discoverability.
+- Registry help generation now better aligns with class constructor documentation in class-based tools.
+
+### Web & UI
+- Single-cell analysis UI received iterative upgrades:
+  - Better code cell management and undo behavior
+  - Improved AnnData slot detail retrieval and display
+  - Better DataFrame rendering and integration
+  - Plot density/point style control refinements
+  - i18n and UX polish for analysis panels
+- `omicverse_web` service layer expanded with session-oriented agent service support.
+
+### Developer Experience & Testing
+- Added FM test suite and multiple harness/ovagent test modules.
+- Removed obsolete legacy-priority and complexity-classifier test paths.
+- Added workflow and harness documentation pages for runtime contracts and operational guidance.
+
+### Documentation
+- Updated and expanded agent architecture and streaming API docs.
+- Updated `t_preprocess_cpu.ipynb` to match latest GPU/version detection behavior.
+- Added bilingual and deployment-oriented guidance for Jarvis and agent-related workflows.
 

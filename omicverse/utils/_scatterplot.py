@@ -15,7 +15,7 @@ from typing import (
     Literal,
 )
 from warnings import warn
-from .registry import register_function
+from .._registry import register_function
 
 import numpy as np
 import pandas as pd
@@ -142,7 +142,8 @@ def embedding(
 ) -> Union[Figure, Axes, None]:
     r"""Scatter plot for user specified embedding basis (e.g. umap, pca, etc).
 
-    Arguments:
+    Parameters
+    ----------
         adata: Annotated data matrix
         basis: Name of the obsm basis to use
         color: Keys for annotations of observations/cells or variables/genes (None)
@@ -191,7 +192,8 @@ def embedding(
         marker: Marker style ('.') 
         **kwargs: Additional arguments passed to scatter
         
-    Returns:
+    Returns
+    -------
         Matplotlib axes or figure object if show=False
     """
     #####################
@@ -578,22 +580,30 @@ def embedding(
         elif colorbar_loc is not None:
 
             if frameon=='small' or frameon==False:
-                
+
                 from matplotlib.ticker import MaxNLocator
 
                 # 获取主轴的位置
                 pos = ax.get_position()
-                
+
                 # 计算colorbar的高度（主轴高度的30%）
                 cb_height = pos.height * 0.3
                 # colorbar垂直居中
-                cb_bottom = pos.y0 
-                
+                cb_bottom = pos.y0
+
+                # 计算colorbar的宽度（相对于subplot宽度，而不是figure宽度）
+                # 使用subplot宽度的5%作为colorbar宽度，这样在多子图时也能保持合适的宽度
+                cb_width = pos.width * 0.05
+                # colorbar与subplot的间距也相对于subplot宽度
+                cb_pad = pos.width * 0.05
+
                 # 手动创建colorbar轴：[left, bottom, width, height]
-                cax1 = pl.gcf().add_axes([pos.x1 + 0.02, cb_bottom, 0.02, cb_height])
-                
+                # Use ax.figure instead of pl.gcf() to ensure correct figure in multi-panel plots
+                cax1 = ax.figure.add_axes([pos.x1 + cb_pad, cb_bottom, cb_width, cb_height])
+
                 cb = pl.colorbar(cax, cax=cax1, orientation="vertical")
-                cb.locator = MaxNLocator(nbins=3, integer=True)
+                # Remove integer=True to allow float values in colorbar ticks
+                cb.locator = MaxNLocator(nbins=3, integer=False)
                 cb.update_ticks()
 
             else:
@@ -770,11 +780,13 @@ def _wraps_plot_scatter(wrapper):
 def umap(adata, **kwargs) -> Union[Axes, List[Axes], None]:
     r"""Scatter plot in UMAP basis.
 
-    Arguments:
+    Parameters
+    ----------
         adata: Annotated data matrix
         **kwargs: Additional arguments passed to embedding function
 
-    Returns:
+    Returns
+    -------
         Matplotlib axes or list of axes if show=False
     """
     return embedding(adata, 'umap', **kwargs)
@@ -790,11 +802,13 @@ def umap(adata, **kwargs) -> Union[Axes, List[Axes], None]:
 def tsne(adata, **kwargs) -> Union[Axes, List[Axes], None]:
     r"""Scatter plot in tSNE basis.
 
-    Arguments:
+    Parameters
+    ----------
         adata: Annotated data matrix
         **kwargs: Additional arguments passed to embedding function
 
-    Returns:
+    Returns
+    -------
         Matplotlib axes or list of axes if show=False
     """
     return embedding(adata, 'tsne', **kwargs)
@@ -912,7 +926,8 @@ def pca(
 ) -> Union[Axes, List[Axes], None]:
     r"""Scatter plot in PCA coordinates.
 
-    Arguments:
+    Parameters
+    ----------
         adata: Annotated data matrix
         annotate_var_explained: Annotate explained variance (False)
         show: Show the plot (None)
@@ -920,7 +935,8 @@ def pca(
         save: Save the plot (None)
         **kwargs: Additional arguments passed to embedding function
 
-    Returns:
+    Returns
+    -------
         Matplotlib axes or list of axes if show=False
     """
     if not annotate_var_explained:
@@ -1554,7 +1570,12 @@ def _color_vector(
             color_vector = color_vector.fillna(to_hex(na_color))
         return color_vector, True
     elif not isinstance(values.dtype, pd.CategoricalDtype):
-        return values, False
+        # 将数值列强制转为 float array，避免 object dtype 传入 matplotlib 时报错
+        # （例如 obs 列存为 Python int / object，circles() 无法识别）
+        try:
+            return np.asarray(pd.to_numeric(values, errors="raise"), dtype=float), False
+        except (ValueError, TypeError):
+            return values, False
 
 
 def _basis2name(basis):
@@ -1746,11 +1767,13 @@ def _embedding(
     """\
     Scatter plot for user specified embedding basis (e.g. umap, pca, etc)
 
-    Arguments:
+    Parameters
+    ----------
         adata: Annotated data matrix.
         basis: Name of the `obsm` basis to use.
-        
-    Returns:
+
+    Returns
+    -------
         If `show==False` a :class:`~matplotlib.axes.Axes` or a list of it.
     """
 
@@ -1839,7 +1862,7 @@ def _obs_categories_ordered(adata, key) -> list[str]:
     return [str(x) for x in natsorted(np.unique(arr))]
 
 def _set_colors_for_categorical_obs(
-    adata, value_to_plot: str, palette: str | Sequence[str] | Cycler | Mapping[str, str]
+    adata, value_to_plot: str, palette: Union[str, Sequence[str], Cycler, Mapping[str, str]]
 ):
     """Set `adata.uns[f'{value_to_plot}_colors']` according to the given palette.
     兼容 pandas/Polars；若 palette 是 dict，会按类别键匹配。

@@ -91,6 +91,26 @@ You can use `conda install omicverse -c conda-forge` or `pip install -U omicvers
 Please checkout the documentations and tutorials at [omicverse page](https://starlitnightly.github.io/omicverse/) or [omicverse.readthedocs.io](https://omicverse.readthedocs.io/en/latest/index.html).
 
 
+### MCP Server (Model Context Protocol)
+
+OmicVerse provides an MCP server that exposes registered analysis tools to AI assistants (Claude Code, etc.) via the standard [Model Context Protocol](https://modelcontextprotocol.io/).
+
+```bash
+# Install with MCP dependencies
+pip install -e ".[mcp]"
+
+# Start the server (stdio transport)
+python -m omicverse.mcp        # or: omicverse-mcp
+python -m omicverse.mcp --phase P0   # core pipeline tools only
+```
+
+**Tool phases**: P0 covers the core single-cell pipeline (read, qc, scale, pca, neighbors, umap, leiden). P0.5 adds marker gene analysis and visualization. P2 adds availability-gated class tools (pyDEG, pySCSA, MetaCell). 20 built-in meta tools provide tool discovery, session management, observability, artifact management, and runtime safety (quotas, TTL, cleanup).
+
+**Testing**: 4 CI profiles — fast-mock (PR default), core-runtime, scientific-runtime, extended-runtime. Run `bash scripts/ci/mcp-fast-mock.sh` locally. See [CI profiles](docs/mcp_ci_profiles.md) and [runtime matrix](docs/mcp_runtime_matrix.md).
+
+- [Quickstart Guide](docs/mcp_quickstart.md) — installation, tool tables, response format, full pipeline walkthrough
+- [Integration Guide](docs/mcp_integration.md) — client setup (Claude Code, generic MCP), phase selection, session config
+
 ## `4` [Data Framework and Reference](#)
 
 The omicverse is implemented as an infrastructure based on the following four data structures.
@@ -222,6 +242,14 @@ The table contains the tools have been published
     <td align="center">FlashDeconv<br><a href="https://github.com/cafferychen777/FlashDeconv">📦</a> <a href="https://doi.org/10.64898/2025.12.22.696108">📖</a></td>
     <td align="center">Hospot<br><a href="https://github.com/yoseflab/hotspot">📦</a> <a href="https://www.sciencedirect.com/science/article/pii/S2405471221001149?via%3Dihub">📖</a></td>
     <td align="center">Banksy<br><a href="https://github.com/prabhakarlab/Banksy_py">📦</a> <a href="https://www.nature.com/articles/s41588-024-01664-3#citeas">📖</a></td>
+
+  </tr>
+  <tr>
+    <td align="center">STAR<br><a href="https://github.com/alexdobin/STAR">📦</a> <a href="https://pubmed.ncbi.nlm.nih.gov/23104886/">📖</a></td>
+    <td align="center">fastp<br><a href="https://github.com/aristoteleo/dynamo-release">📦</a> <a href="https://www.sciencedirect.com/science/article/pii/S0092867421015774">📖</a></td>
+    <td align="center">featureCounts<br><a href="https://github.com/ShiLab-Bioinformatics/subread">📦</a> <a href="https://pubmed.ncbi.nlm.nih.gov/24227677/">📖</a></td>
+    <td align="center">edgeR<br><a href="https://bioconductor.org/packages/devel/bioc/html/edgeR.html">📦</a> <a href="https://academic.oup.com/nar/article/doi/10.1093/nar/gkaf018/7973897">📖</a></td>
+    <td align="center">spaco<br><a href="https://github.com/BrainStOrmics/Spaco">📦</a> <a href="https://www.cell.com/patterns/fulltext/S2666-3899(23)00324-0">📖</a></td>
 
   </tr>
 </table>

@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from ..utils.registry import register_function
+from .._registry import register_function
 from ._cli_utils import (
     build_env,
     ensure_dir,
@@ -255,6 +255,8 @@ def _run_star_one(
         "ov.alignment.STAR([('S1','S1_1.fq.gz','S1_2.fq.gz')], genome_dir='index', output_dir='star')",
     ],
     related=["alignment.fastp", "alignment.featureCount"],
+    prerequisites={"optional_functions": ["fastp"]},
+    produces={"uns": ["bam_files"]},
 )
 def STAR(
     samples: Union[

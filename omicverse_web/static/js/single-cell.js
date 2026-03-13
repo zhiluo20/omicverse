@@ -9,6 +9,7 @@ class SingleCellAnalysis {
         this.currentTheme = 'light';
         this.currentView = 'visualization';
         this.currentLang = 'en';
+        this.paramCache = {};  // persists tool parameter values across re-renders
         this.codeCells = [];
         this.cellCounter = 0;
         this.pendingPlotRefresh = false;
@@ -20,6 +21,14 @@ class SingleCellAnalysis {
         this.contextTargetPath = '';
         this.contextTargetIsDir = true;
         this.contextClipboard = null;
+
+        // Execution state tracking for interrupt support
+        this.isExecuting = false;
+        this.executionAbortController = null;
+        this.executionStatusPollInterval = null;
+
+        // Track last focused cell for toolbar run button
+        this.lastFocusedCellId = null;
 
         // Initialize high-performance components
         this.dataManager = new DataManager();
@@ -39,10 +48,13 @@ class SingleCellAnalysis {
         this.setupAgentConfig();
         this.setupAgentChat();
         this.setupKernelSelector();
+        this.setupSidebarResize(); // JupyterLab-like resizable sidebar
         this.checkStatus();
-        this.selectAnalysisCategory('preprocessing');
+        this.showParameterPlaceholder();
+        this.updateAdataStatus(null);
         this.applyCodeFontSize();
         this.fetchKernelVars();
+        window.addEventListener('resize', () => this.syncPanelHeight());
     }
 
     setupLanguageToggle() {
@@ -68,18 +80,57 @@ class SingleCellAnalysis {
                 'nav.normalization': 'Normalization',
                 'nav.qc': 'Quality Control',
                 'nav.featureSelection': 'Feature Selection',
-                'nav.dimReduction': 'Dimensionality Reduction',
+                'nav.dimReduction': 'Visualization',
+                'nav.dimReductionSub': 'Dimensionality Reduction',
                 'nav.linearDR': 'Linear DR',
                 'nav.nonlinearDR': 'Nonlinear DR',
                 'nav.visualization': 'Visualization',
-                'nav.clustering': 'Clustering',
+                'nav.clustering': 'Basic Analysis',
+                'nav.clusteringSub': 'Clustering',
                 'nav.communityDetection': 'Community Detection',
                 'nav.cellTypeId': 'Cell Type ID',
                 'nav.clusterValidation': 'Cluster Validation',
-                'nav.omicverse': 'OmicVerse',
+                'nav.omicverse': 'Advanced Analysis',
                 'nav.cellAnnotation': 'Cell Annotation',
                 'nav.trajectory': 'Trajectory Analysis',
+                'nav.envSection': 'Environment',
+                'nav.envInstall': 'Python Package Install',
+                'nav.envInfo': 'Python Env Info',
+                'envInfo.title': 'Python Environment Info',
+                'envInfo.loading': 'Loading environment info...',
+                'envInfo.system': 'System',
+                'envInfo.python': 'Python Environment',
+                'envInfo.gpu': 'GPU / Accelerator',
+                'envInfo.noGpu': 'No GPU / accelerator detected',
+                'envInfo.keyPkgs': 'Key Package Versions',
+                'envInfo.pkgName': 'Package',
+                'envInfo.pkgVersion': 'Version',
+                'envInfo.pkgStatus': 'Status',
+                'envInfo.notInstalled': 'Not installed',
+                'envInfo.allPkgs': 'All Installed Packages',
+                'envInfo.filter': 'Filter packages...',
                 'nav.diffAnalysis': 'Differential Analysis',
+                'env.title': 'Python Environment Manager',
+                'env.pkgPlaceholder': 'e.g. sctour, scvi-tools, harmonypy',
+                'env.search': 'Search',
+                'env.foundOnPypi': 'Found on PyPI',
+                'env.notFound': 'Package not found on PyPI.',
+                'env.tabPip': 'uv pip',
+                'env.tabConda': 'mamba / conda',
+                'env.mirror': 'Mirror:',
+                'env.testMirrors': 'Test Speed',
+                'env.testingMirrors': 'Testing mirror latency...',
+                'env.extraArgs': 'Extra args:',
+                'env.channels': 'Channels:',
+                'env.customChannel': 'custom-channel',
+                'env.addChannel': '+ Add',
+                'env.install': 'Install',
+                'env.output': 'Output',
+                'env.clear': 'Clear',
+                'env.consolePlaceholder': 'Ready.',
+                'env.installSuccess': '✓ Installation completed successfully.',
+                'env.installFailed': '✗ Installation failed',
+                'env.enterPkg': 'Please enter a package name first.',
                 'nav.enrichment': 'Functional Enrichment',
                 'search.placeholder': 'Search genes, cell types...',
                 'search.hint': 'Searching...',
@@ -107,6 +158,17 @@ class SingleCellAnalysis {
                 'status.genes': 'genes',
                 'status.save': 'Save',
                 'status.reset': 'Reset',
+                'status.dsMax': 'max',
+                'status.dsInt': 'int',
+                'status.dsFloat': 'float',
+                'status.dsNorm': 'normalized',
+                'status.dsNormTip': 'Row sums are uniform — data appears normalized',
+                'status.dsRaw': 'raw counts',
+                'status.dsRawTip': 'Row sums vary significantly — data appears to be raw counts',
+                'status.dsLog1pTip': 'log1p transformation has been applied',
+                'status.dsScaled': 'scaled',
+                'status.dsScaledTip': 'Data has negative values — sc.pp.scale may have been applied',
+                'status.dsTargetTip': 'Estimated normalization target_sum',
                 'controls.embedding': 'Embedding',
                 'controls.embeddingPlaceholder': 'Select embedding',
                 'controls.colorBy': 'Color by',
@@ -118,26 +180,33 @@ class SingleCellAnalysis {
                 'controls.paletteDiverging': 'RdBu (diverging)',
                 'controls.paletteSpectral': 'Spectral (diverging)',
                 'controls.categoryPalette': 'Categorical palette',
+                'controls.ovDefault': 'OmicVerse (28 colors)',
+                'controls.ov56': 'OmicVerse 56',
+                'controls.ov112': 'OmicVerse 112',
+                'controls.vibrant': 'Vibrant (24)',
                 'controls.paletteDefaultScanpy': 'Default (Scanpy)',
-                'controls.tab10': 'Tab10 (10 colors)',
-                'controls.tab20': 'Tab20 (20 colors)',
-                'controls.tab20b': 'Tab20b (20 colors)',
-                'controls.tab20c': 'Tab20c (20 colors)',
-                'controls.set1': 'Set1 (9, vivid)',
-                'controls.set2': 'Set2 (8, soft)',
-                'controls.set3': 'Set3 (12, gentle)',
+                'controls.tab10': 'Tab10 (10)',
+                'controls.tab20': 'Tab20 (20)',
+                'controls.set1': 'Set1 (9)',
+                'controls.set2': 'Set2 (8)',
+                'controls.set3': 'Set3 (12)',
                 'controls.paired': 'Paired (12)',
-                'controls.pastel1': 'Pastel1 (9)',
-                'controls.pastel2': 'Pastel2 (8)',
-                'controls.dark2': 'Dark2 (8)',
-                'controls.accent': 'Accent (8)',
                 'controls.vmin': 'Min (vmin)',
                 'controls.vmax': 'Max (vmax)',
                 'controls.auto': 'Auto',
                 'controls.apply': 'Apply',
+                'controls.pointSize': 'Point size',
+                'controls.opacity': 'Opacity',
+                'controls.densityEnable': 'Enable density adjust',
+                'controls.densityAdjust': 'Density adjust',
+                'controls.densityDisabledByToggle': 'Density adjust is off',
+                'controls.densityDisabledNoFeature': 'Select a feature to enable density adjust',
+                'controls.densityPendingType': 'Checking feature type...',
+                'controls.resetStyle': 'Reset style',
                 'loading.processing': 'Processing data...',
                 'panel.parameters': 'Parameters',
                 'panel.selectAnalysis': 'Select an analysis type from the left menu',
+                'panel.adataStatus': 'adata Status',
                 'panel.analysisStatus': 'Analysis Status',
                 'panel.waitingUpload': 'Waiting for data upload...',
                 'toolbar.kernel': 'Kernel',
@@ -148,6 +217,7 @@ class SingleCellAnalysis {
                 'toolbar.clearAll': 'Clear all',
                 'toolbar.fontDown': 'Decrease font',
                 'toolbar.fontUp': 'Increase font',
+                'toolbar.interrupt': 'Interrupt',
                 'file.browser': 'File Browser',
                 'file.root': 'Working Directory',
                 'file.empty': 'Empty folder',
@@ -257,6 +327,22 @@ class SingleCellAnalysis {
                 'tools.diffDesc': 'Differential expression genes',
                 'tools.enrichment': 'Enrichment',
                 'tools.enrichmentDesc': 'GO/KEGG enrichment',
+                'tools.celltypist': 'CellTypist',
+                'tools.celltypistDesc': 'Logistic regression-based cell type annotation',
+                'tools.gpt4celltype': 'GPT4Celltype',
+                'tools.gpt4celltypeDesc': 'LLM-based cell type annotation',
+                'tools.scsa': 'SCSA',
+                'tools.scsaDesc': 'Score-based cell type annotation',
+                'tools.diffusionmap': 'Diffusion Map',
+                'tools.diffusionmapDesc': 'Diffusion map trajectory + DPT pseudotime',
+                'tools.slingshot': 'Slingshot',
+                'tools.slingshotDesc': 'Cell lineage and pseudotime inference',
+                'tools.palantir': 'Palantir',
+                'tools.palantirDesc': 'Cell fate prediction via diffusion',
+                'tools.paga': 'PAGA',
+                'tools.pagaDesc': 'Partition-based graph abstraction visualization',
+                'tools.sctour': 'scTour',
+                'tools.sctourDesc': 'Deep learning-based trajectory analysis',
                 'gene.error': 'Gene expression error',
                 'gene.notFound': 'Gene not found',
                 'gene.showing': 'Showing gene expression',
@@ -277,6 +363,26 @@ class SingleCellAnalysis {
                 'tool.failed': 'failed',
                 'tool.completed': 'completed',
                 'tool.execFailed': 'failed to run',
+                'traj.title': 'Trajectory Visualization',
+                'traj.embTitle': 'Pseudotime Embedding',
+                'traj.hmTitle': 'Gene Trend Heatmap',
+                'traj.generate': 'Generate',
+                'traj.clickGenerate': 'Click Generate to render',
+                'traj.hmHint': 'Enter genes then click Generate',
+                'traj.pseudotimeCol': 'Pseudotime column',
+                'traj.autoDetect': 'Auto-detect',
+                'traj.basis': 'Embedding',
+                'traj.colormap': 'Colormap',
+                'traj.pointSize': 'Point size',
+                'traj.pagaOverlay': 'Overlay PAGA graph',
+                'traj.pagaGroups': 'Cluster column (groups)',
+                'traj.selectCol': 'Select',
+                'traj.minEdge': 'Min edge width',
+                'traj.nodeScale': 'Node size scale',
+                'traj.genes': 'Genes (comma or newline separated)',
+                'traj.layer': 'Data layer',
+                'traj.bins': 'Pseudotime bins',
+                'traj.hmColormap': 'Colormap',
                 'notebook.selectIpynb': 'Please select a .ipynb file',
                 'notebook.importConfirm': 'Importing a notebook will replace current cells. Continue?',
                 'notebook.openConfirm': 'Opening a notebook will replace current cells. Continue?',
@@ -290,6 +396,7 @@ class SingleCellAnalysis {
                 'var.preview50': 'Preview 50x50',
                 'var.dataframeLabel': 'DataFrame',
                 'var.anndataLabel': 'AnnData',
+                'var.loadToViz': 'Load to Visualization',
                 'parameter.none': 'No parameters required.',
                 'view.agentTitle': 'Agent Chat',
                 'view.codeTitle': 'Python Code Editor',
@@ -332,18 +439,57 @@ class SingleCellAnalysis {
                 'nav.normalization': '标准化处理',
                 'nav.qc': '质量控制',
                 'nav.featureSelection': '特征选择',
-                'nav.dimReduction': '降维分析',
+                'nav.dimReduction': '可视化',
+                'nav.dimReductionSub': '降维',
                 'nav.linearDR': '线性降维',
                 'nav.nonlinearDR': '非线性降维',
                 'nav.visualization': '可视化',
-                'nav.clustering': '聚类分析',
+                'nav.clustering': '基础分析',
+                'nav.clusteringSub': '聚类',
                 'nav.communityDetection': '社区检测',
                 'nav.cellTypeId': '细胞类型识别',
                 'nav.clusterValidation': '聚类验证',
-                'nav.omicverse': 'OmicVerse',
+                'nav.omicverse': '进阶分析',
                 'nav.cellAnnotation': '细胞注释',
                 'nav.trajectory': '轨迹分析',
+                'nav.envSection': '环境管理',
+                'nav.envInstall': 'Python 包安装',
+                'nav.envInfo': 'Python 环境信息',
+                'envInfo.title': 'Python 环境信息',
+                'envInfo.loading': '正在加载环境信息...',
+                'envInfo.system': '系统信息',
+                'envInfo.python': 'Python 环境',
+                'envInfo.gpu': 'GPU / 加速器',
+                'envInfo.noGpu': '未检测到 GPU / 加速器',
+                'envInfo.keyPkgs': '核心包版本',
+                'envInfo.pkgName': '包名',
+                'envInfo.pkgVersion': '版本',
+                'envInfo.pkgStatus': '状态',
+                'envInfo.notInstalled': '未安装',
+                'envInfo.allPkgs': '所有已安装包',
+                'envInfo.filter': '过滤包名...',
                 'nav.diffAnalysis': '差异分析',
+                'env.title': 'Python 环境管理',
+                'env.pkgPlaceholder': '例如 sctour, scvi-tools, harmonypy',
+                'env.search': '搜索',
+                'env.foundOnPypi': 'PyPI 上有此包',
+                'env.notFound': 'PyPI 上未找到该包。',
+                'env.tabPip': 'uv pip',
+                'env.tabConda': 'mamba / conda',
+                'env.mirror': '镜像源:',
+                'env.testMirrors': '测速',
+                'env.testingMirrors': '正在测试镜像延迟...',
+                'env.extraArgs': '附加参数:',
+                'env.channels': 'Channel:',
+                'env.customChannel': '自定义 channel',
+                'env.addChannel': '+ 添加',
+                'env.install': '安装',
+                'env.output': '输出',
+                'env.clear': '清空',
+                'env.consolePlaceholder': '就绪。',
+                'env.installSuccess': '✓ 安装成功。',
+                'env.installFailed': '✗ 安装失败',
+                'env.enterPkg': '请先输入包名。',
                 'nav.enrichment': '功能富集',
                 'search.placeholder': '搜索基因、细胞类型...',
                 'search.hint': '搜索内容...',
@@ -371,6 +517,17 @@ class SingleCellAnalysis {
                 'status.genes': '基因',
                 'status.save': '保存',
                 'status.reset': '重置',
+                'status.dsMax': '最大值',
+                'status.dsInt': '整数',
+                'status.dsFloat': '浮点数',
+                'status.dsNorm': '已标准化',
+                'status.dsNormTip': '各细胞行和均匀，数据已完成标准化',
+                'status.dsRaw': '原始计数',
+                'status.dsRawTip': '各细胞行和差异显著，数据为原始计数',
+                'status.dsLog1pTip': '已执行 log1p 变换',
+                'status.dsScaled': '已缩放',
+                'status.dsScaledTip': '数据存在负值，可能已执行 sc.pp.scale',
+                'status.dsTargetTip': '推测的标准化 target_sum',
                 'controls.embedding': '降维方法',
                 'controls.embeddingPlaceholder': '选择降维方法',
                 'controls.colorBy': '着色方式',
@@ -382,26 +539,33 @@ class SingleCellAnalysis {
                 'controls.paletteDiverging': 'RdBu（发散）',
                 'controls.paletteSpectral': 'Spectral（发散）',
                 'controls.categoryPalette': '分类调色板',
+                'controls.ovDefault': 'OmicVerse（28色）',
+                'controls.ov56': 'OmicVerse 56',
+                'controls.ov112': 'OmicVerse 112',
+                'controls.vibrant': 'Vibrant（24色）',
                 'controls.paletteDefaultScanpy': '默认（Scanpy）',
                 'controls.tab10': 'Tab10（10色）',
                 'controls.tab20': 'Tab20（20色）',
-                'controls.tab20b': 'Tab20b（20色）',
-                'controls.tab20c': 'Tab20c（20色）',
-                'controls.set1': 'Set1（9色，鲜艳）',
-                'controls.set2': 'Set2（8色，柔和）',
-                'controls.set3': 'Set3（12色，淡雅）',
+                'controls.set1': 'Set1（9色）',
+                'controls.set2': 'Set2（8色）',
+                'controls.set3': 'Set3（12色）',
                 'controls.paired': 'Paired（12色）',
-                'controls.pastel1': 'Pastel1（9色）',
-                'controls.pastel2': 'Pastel2（8色）',
-                'controls.dark2': 'Dark2（8色）',
-                'controls.accent': 'Accent（8色）',
                 'controls.vmin': '最小值 (vmin)',
                 'controls.vmax': '最大值 (vmax)',
                 'controls.auto': '自动',
                 'controls.apply': '应用',
+                'controls.pointSize': '点大小',
+                'controls.opacity': '透明度',
+                'controls.densityEnable': '启用密度调节',
+                'controls.densityAdjust': '密度调节',
+                'controls.densityDisabledByToggle': '密度调节已关闭',
+                'controls.densityDisabledNoFeature': '请选择特征以启用密度调节',
+                'controls.densityPendingType': '正在检查特征类型...',
+                'controls.resetStyle': '重置样式',
                 'loading.processing': '正在处理数据...',
                 'panel.parameters': '参数设置',
-                'panel.selectAnalysis': '请从左侧菜单选择分析类型',
+                'panel.selectAnalysis': '点击左侧菜单栏选取功能',
+                'panel.adataStatus': 'adata 状态',
                 'panel.analysisStatus': '分析状态',
                 'panel.waitingUpload': '等待上传数据...',
                 'toolbar.kernel': '内核',
@@ -412,6 +576,7 @@ class SingleCellAnalysis {
                 'toolbar.clearAll': '清空所有',
                 'toolbar.fontDown': '减小字号',
                 'toolbar.fontUp': '增大字号',
+                'toolbar.interrupt': '中断',
                 'file.browser': '文件浏览器',
                 'file.root': '运行目录',
                 'file.empty': '空目录',
@@ -521,6 +686,22 @@ class SingleCellAnalysis {
                 'tools.diffDesc': '差异表达基因',
                 'tools.enrichment': '功能富集',
                 'tools.enrichmentDesc': 'GO/KEGG富集分析',
+                'tools.celltypist': 'CellTypist',
+                'tools.celltypistDesc': '基于逻辑回归的细胞类型自动注释',
+                'tools.gpt4celltype': 'GPT4Celltype',
+                'tools.gpt4celltypeDesc': '基于大语言模型的细胞类型注释',
+                'tools.scsa': 'SCSA',
+                'tools.scsaDesc': '基于打分系统的细胞类型注释',
+                'tools.diffusionmap': 'Diffusion Map',
+                'tools.diffusionmapDesc': '扩散映射轨迹分析，计算 DPT 拟时序',
+                'tools.slingshot': 'Slingshot',
+                'tools.slingshotDesc': '细胞谱系与拟时序推断',
+                'tools.palantir': 'Palantir',
+                'tools.palantirDesc': '基于扩散过程的细胞命运预测',
+                'tools.paga': 'PAGA',
+                'tools.pagaDesc': '基于分区的图抽象可视化',
+                'tools.sctour': 'scTour',
+                'tools.sctourDesc': '基于深度学习的轨迹分析',
                 'gene.error': '基因表达错误',
                 'gene.notFound': '基因未找到',
                 'gene.showing': '显示基因表达',
@@ -541,6 +722,26 @@ class SingleCellAnalysis {
                 'tool.failed': '失败',
                 'tool.completed': '完成',
                 'tool.execFailed': '执行失败',
+                'traj.title': '轨迹分析可视化',
+                'traj.embTitle': '拟时序嵌入图',
+                'traj.hmTitle': '基因拟时序热图',
+                'traj.generate': '生成',
+                'traj.clickGenerate': '点击「生成」显示嵌入图',
+                'traj.hmHint': '选择基因后点击「生成」',
+                'traj.pseudotimeCol': '拟时序列',
+                'traj.autoDetect': '自动检测',
+                'traj.basis': '嵌入方法',
+                'traj.colormap': '配色',
+                'traj.pointSize': '点大小',
+                'traj.pagaOverlay': '叠加 PAGA 图',
+                'traj.pagaGroups': '聚类列 (groups)',
+                'traj.selectCol': '选择',
+                'traj.minEdge': '最小边宽',
+                'traj.nodeScale': '节点大小缩放',
+                'traj.genes': '基因列表（逗号或换行分隔）',
+                'traj.layer': '数据层',
+                'traj.bins': '拟时序分箱数',
+                'traj.hmColormap': '热图配色',
                 'notebook.selectIpynb': '请选择 .ipynb 文件',
                 'notebook.importConfirm': '导入笔记本会替换当前代码单元，是否继续？',
                 'notebook.openConfirm': '打开笔记本会替换当前代码单元，是否继续？',
@@ -554,6 +755,7 @@ class SingleCellAnalysis {
                 'var.preview50': '预览 50x50',
                 'var.dataframeLabel': 'DataFrame',
                 'var.anndataLabel': 'AnnData',
+                'var.loadToViz': '加载到可视化',
                 'parameter.none': '该工具无需参数设置',
                 'view.agentTitle': 'Agent 对话',
                 'view.codeTitle': 'Python 代码编辑器',
@@ -590,6 +792,7 @@ class SingleCellAnalysis {
                 , 'user.logout': '退出'
             }
         };
+        if (!key) return '';
         return (dict[this.currentLang] && dict[this.currentLang][key]) || key;
     }
 
@@ -620,7 +823,14 @@ class SingleCellAnalysis {
         if (langToggle) {
             langToggle.textContent = this.t('lang.toggle');
         }
-        this.refreshParameterFormLanguage();
+        // Re-render dynamic content in the parameter panel
+        if (this.currentTool) {
+            // A tool form is open — re-render it (saves & restores values)
+            this.refreshParameterFormLanguage();
+        } else if (this.currentCategory) {
+            // The tool list is showing — re-render so category labels update
+            this.selectAnalysisCategory(this.currentCategory, { silent: true });
+        }
         this.updateCodeCellPlaceholders();
     }
 
@@ -665,7 +875,68 @@ class SingleCellAnalysis {
             ['分辨率', 'Resolution'],
             ['该工具无需参数设置', 'No parameters required.'],
             ['返回工具列表', 'Back to tools'],
-            ['运行', 'Run']
+            ['运行', 'Run'],
+            // Annotation forms
+            ['模型文件路径', 'Model file path'],
+            ['本地 .pkl', 'local .pkl'],
+            ['下载后自动填入，或手动输入路径', 'Auto-filled after download, or enter path manually'],
+            ['从 CellTypist 获取模型列表', 'Fetch CellTypist model list'],
+            ['获取中...', 'Fetching...'],
+            ['模型列表已加载', 'Model list loaded'],
+            ['-- 选择模型 --', '-- Select model --'],
+            ['下载选中模型', 'Download selected model'],
+            ['下载中...', 'Downloading...'],
+            ['✓ 已下载', '✓ Downloaded'],
+            ['✓ 已找到本地模型: ', '✓ Found local model: '],
+            ['运行注释', 'Run annotation'],
+            ['聚类键', 'Cluster key'],
+            ['组织类型', 'Tissue type'],
+            ['物种', 'Species'],
+            ['LLM 提供商', 'LLM Provider'],
+            ['通义千问', 'Tongyi Qianwen'],
+            ['模型名称', 'Model name'],
+            ['留空则读取 AGI_API_KEY 环境变量', 'Leave blank to use AGI_API_KEY env var'],
+            ['(可选)', '(optional)'],
+            ['自定义 OpenAI 兼容端点', 'Custom OpenAI-compatible endpoint'],
+            ['Top marker 基因数', 'Top marker genes'],
+            ['SCSA 数据库路径', 'SCSA database path'],
+            ['留空将自动下载', 'Leave blank to auto-download'],
+            ['下载', 'Download'],
+            ['倍数变化阈值', 'Fold change threshold'],
+            ['P 值阈值', 'P-value threshold'],
+            ['细胞类型', 'Cell type'],
+            ['参考数据库', 'Reference database'],
+            ['组织', 'Tissue'],
+            ['留空=All', 'blank=All'],
+            // Trajectory forms
+            ['聚类列', 'Cluster column'],
+            ['低维表示', 'Low-dim representation'],
+            ['主成分数', 'Number of PCs'],
+            ['起始细胞类型', 'Origin cell type'],
+            ['终止细胞类型', 'Terminal cell types'],
+            ['逗号分隔', 'comma-separated'],
+            ['训练轮数', 'Training epochs'],
+            ['路标点数', 'Waypoints'],
+            ['拟时序列', 'Pseudotime column'],
+            ['低维表示 (use_rep，用于重算邻居)', 'Low-dim rep (use_rep, for neighbor recompute)'],
+            ['可视化嵌入', 'Visualization embedding'],
+            ['lec 重建权重', 'lec reconstruction weight'],
+            ['lode 重建权重', 'lode reconstruction weight'],
+            ['将在 obs 中添加 dpt_pseudotime 列，可用于可视化着色。', 'Adds dpt_pseudotime column to obs for coloring.'],
+            ['将在 obs 中添加 slingshot_pseudotime 列。', 'Adds slingshot_pseudotime column to obs.'],
+            ['将在 obs 中添加 palantir_pseudotime 和 palantir_entropy 列。', 'Adds palantir_pseudotime and palantir_entropy columns to obs.'],
+            ['将生成 PAGA 图并在结果区域显示。', 'Generates a PAGA graph shown in the result overlay.'],
+            ['需要原始 count 数据在 adata.X。将在 obs 中添加 sctour_pseudotime 列。', 'Requires raw counts in adata.X. Adds sctour_pseudotime column to obs.'],
+            ['-- 选择列 --', '-- Select column --'],
+            ['-- 自动检测 --', '-- Auto-detect --'],
+            ['-- 不设置 --', '-- Not set --'],
+            ['例如: Ductal', 'e.g. Ductal'],
+            ['例如: Alpha,Beta', 'e.g. Alpha,Beta'],
+            ['例如: Alpha,Beta,Delta', 'e.g. Alpha,Beta,Delta'],
+            // Save modal
+            ['文件名', 'Filename'],
+            ['文件将下载到浏览器默认下载目录', 'File will be saved to the browser default download folder'],
+            ['确认下载', 'Confirm download']
         ];
         let output = html;
         replacements.forEach(([from, to]) => {
@@ -731,18 +1002,80 @@ class SingleCellAnalysis {
 
         // Mobile menu toggle
         const mobileToggle = document.getElementById('mobile-collapse');
-        const menuMiniButton = document.getElementById('menu-mini-button');
-        
+
         if (mobileToggle) {
             mobileToggle.addEventListener('click', () => {
                 this.toggleMobileMenu();
             });
         }
+    }
 
-        if (menuMiniButton) {
-            menuMiniButton.addEventListener('click', () => {
-                this.toggleMiniMenu();
-            });
+    setupSidebarResize() {
+        // JupyterLab-like resizable sidebar using CSS variables
+        const handle = document.getElementById('sidebar-resize-handle');
+        const sidebar = document.querySelector('.nxl-navigation');
+
+        if (!handle || !sidebar) return;
+
+        let isResizing = false;
+        let startX = 0;
+        let startWidth = 0;
+        const minWidth = 200;  // Minimum sidebar width
+        const maxWidth = 600;  // Maximum sidebar width
+
+        // Function to update CSS variable for sidebar width
+        const setSidebarWidth = (width) => {
+            document.documentElement.style.setProperty('--sidebar-width', width + 'px');
+        };
+
+        handle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            startX = e.clientX;
+
+            // Get current width from CSS variable
+            const currentWidth = getComputedStyle(document.documentElement)
+                .getPropertyValue('--sidebar-width');
+            startWidth = parseInt(currentWidth);
+
+            // Add visual feedback
+            handle.classList.add('resizing');
+            document.body.classList.add('resizing-sidebar');
+
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const delta = e.clientX - startX;
+            const newWidth = Math.min(Math.max(startWidth + delta, minWidth), maxWidth);
+
+            // Update CSS variable - this updates all elements using var(--sidebar-width)
+            setSidebarWidth(newWidth);
+
+            e.preventDefault();
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isResizing) return;
+
+            isResizing = false;
+            handle.classList.remove('resizing');
+            document.body.classList.remove('resizing-sidebar');
+
+            // Save the width to localStorage
+            const currentWidth = getComputedStyle(document.documentElement)
+                .getPropertyValue('--sidebar-width');
+            localStorage.setItem('omicverse.sidebarWidth', parseInt(currentWidth));
+        });
+
+        // Restore saved width on load
+        const savedWidth = localStorage.getItem('omicverse.sidebarWidth');
+        if (savedWidth) {
+            const width = parseInt(savedWidth);
+            if (width >= minWidth && width <= maxWidth) {
+                setSidebarWidth(width);
+            }
         }
     }
 
@@ -1315,11 +1648,6 @@ class SingleCellAnalysis {
         navigation.classList.toggle('open');
     }
 
-    toggleMiniMenu() {
-        const navigation = document.querySelector('.nxl-navigation');
-        navigation.classList.toggle('mini');
-    }
-
     toggleTheme() {
         const html = document.documentElement;
         const icon = document.getElementById('theme-toggle-icon');
@@ -1397,6 +1725,7 @@ class SingleCellAnalysis {
             } else {
                 this.currentData = data;
                 this.updateUI(data);
+                this.updateAdataStatus(data);
                 this.addToLog(this.t('upload.successDetail') + ': ' + data.n_cells + ' ' + this.t('status.cells') + ', ' + data.n_genes + ' ' + this.t('status.genes'));
                 this.showStatus(this.t('upload.success'), false);
             }
@@ -1410,7 +1739,28 @@ class SingleCellAnalysis {
     }
 
     updateUI(data) {
-        // Hide upload section
+        // ── Reset all controls when switching datasets ───────────────────────
+        const geneInput = document.getElementById('gene-input');
+        if (geneInput) geneInput.value = '';
+
+        const paletteSelect = document.getElementById('palette-select');
+        if (paletteSelect) paletteSelect.value = 'default';
+
+        const catPaletteSelect = document.getElementById('category-palette-select');
+        if (catPaletteSelect) catPaletteSelect.value = 'default';
+
+        // Clear any stale Plotly chart from the previous dataset
+        const plotDiv = document.getElementById('plotly-div');
+        if (plotDiv && typeof Plotly !== 'undefined') Plotly.purge(plotDiv);
+
+        // Reset point-size slider to auto mode
+        const sizeSlider = document.getElementById('point-size-slider');
+        if (sizeSlider) sizeSlider.dataset.auto = 'true';
+
+        // Hide palette visibility rows (will be re-evaluated after plot)
+        this.updatePaletteVisibility('');
+
+        // ── Hide upload section ──────────────────────────────────────────────
         document.getElementById('upload-section').style.display = 'none';
 
         // Show data status
@@ -1423,6 +1773,12 @@ class SingleCellAnalysis {
         // Show controls and visualization
         document.getElementById('viz-controls').style.display = 'block';
         document.getElementById('viz-panel').style.display = 'block';
+
+        // Sync left-panel height to match data-status + viz-panel
+        requestAnimationFrame(() => this.syncPanelHeight());
+
+        // Initialise point-size slider to auto default for this dataset
+        this.initPointSizeSlider();
 
         // Update embedding options
         const embeddingSelect = document.getElementById('embedding-select');
@@ -1453,6 +1809,13 @@ class SingleCellAnalysis {
         // Fetch gene list for autocomplete
         if (this.fetchGeneList) {
             this.fetchGeneList();
+        }
+
+        // Reset parameter panel back to tool-list view (clear any open tool form)
+        if (this.currentCategory) {
+            this.selectAnalysisCategory(this.currentCategory, { silent: true });
+        } else {
+            this.showParameterPlaceholder();
         }
 
         // Auto-select first embedding and update plot
@@ -1520,23 +1883,41 @@ class SingleCellAnalysis {
                 this.pendingPlotRefresh = true;
             }
         }
+
+        // Keep adata status panel in sync
+        this.updateAdataStatus(data);
     }
 
     updateParameterPanel() {
         // Re-enable all parameter buttons now that data is loaded
         const buttons = document.querySelectorAll('#parameter-content button');
         buttons.forEach(button => {
-            if (!button.onclick.toString().includes('showComingSoon')) {
+            if (!button.onclick || !button.onclick.toString().includes('showComingSoon')) {
                 button.disabled = false;
             }
         });
     }
 
+    /** Called when the user explicitly picks a new obs column from color-select.
+     *  Clears gene-input so gene mode doesn't interfere. */
+    onColorSelectChange() {
+        const geneInput = document.getElementById('gene-input');
+        if (geneInput) geneInput.value = '';
+        this.updatePlot();
+    }
+
     updatePlot() {
         const embedding = document.getElementById('embedding-select').value;
-        const colorBy = document.getElementById('color-select').value;
-
         if (!embedding) return;
+
+        // Gene expression takes priority: if gene-input has a value use it,
+        // regardless of what color-select says. This ensures palette/style
+        // changes don't accidentally revert to the obs categorical variable.
+        const geneInput = document.getElementById('gene-input');
+        const geneValue = geneInput ? geneInput.value.trim() : '';
+        const colorBy = geneValue
+            ? 'gene:' + geneValue
+            : document.getElementById('color-select').value;
 
         // Update palette visibility based on color type
         this.updatePaletteVisibility(colorBy);
@@ -1798,8 +2179,8 @@ class SingleCellAnalysis {
     updateColorsOnly(data) {
         // 只更新颜色，保持位置不变
         let markerConfig = {
-            size: data.size || 3,
-            opacity: 0.7
+            size: this.getMarkerSize(),
+            opacity: this.getMarkerOpacity()
         };
         
         if (data.colors) {
@@ -1877,8 +2258,8 @@ class SingleCellAnalysis {
             
             // 准备marker配置
             let markerConfig = {
-                size: data.size || 3,
-                opacity: 0.7
+                size: this.getMarkerSize(),
+                opacity: this.getMarkerOpacity()
             };
             
             if (data.colors) {
@@ -1945,8 +2326,8 @@ class SingleCellAnalysis {
                 mode: 'markers',
                 type: 'scattergl',
                 marker: {
-                    size: data.size || 3,
-                    opacity: 0.7
+                    size: this.getMarkerSize(),
+                    opacity: this.getMarkerOpacity()
                 },
                 showlegend: false
             };
@@ -2056,11 +2437,94 @@ class SingleCellAnalysis {
         };
     }
 
+    // ── Point-style helpers ──────────────────────────────────────────────────
+
+    /** Compute default Plotly marker size from cell count (mirrors Python 120000/n). */
+    computeDefaultPointSize() {
+        const nCells = parseInt(document.getElementById('cell-count')?.textContent || '0', 10);
+        if (!nCells || nCells <= 0) return 4;
+        // Python: s = 120000 / n  (matplotlib area units)
+        // Plotly size ≈ diameter in px ≈ sqrt(s)
+        return Math.max(1, Math.round(Math.sqrt(120000 / nCells) * 10) / 10);
+    }
+
+    getMarkerSize() {
+        const slider = document.getElementById('point-size-slider');
+        if (!slider || slider.dataset.auto === 'true') {
+            return this.computeDefaultPointSize();
+        }
+        return parseFloat(slider.value);
+    }
+
+    getMarkerOpacity() {
+        const slider = document.getElementById('opacity-slider');
+        return slider ? parseFloat(slider.value) : 0.7;
+    }
+
+    /** Called when the size slider is moved manually. */
+    onPointSizeChange(value) {
+        const slider = document.getElementById('point-size-slider');
+        const label  = document.getElementById('point-size-value');
+        if (slider) slider.dataset.auto = 'false';
+        if (label)  label.textContent = parseFloat(value).toFixed(1);
+        this.applyPointStyleLive();
+    }
+
+    /** Called when the opacity slider is moved. */
+    onOpacityChange(value) {
+        const label = document.getElementById('opacity-value');
+        if (label) label.textContent = parseFloat(value).toFixed(2);
+        this.applyPointStyleLive();
+    }
+
+    /** Reset sliders back to auto defaults and redraw. */
+    resetPointStyle() {
+        const sizeSlider    = document.getElementById('point-size-slider');
+        const opacitySlider = document.getElementById('opacity-slider');
+        const sizeLabel     = document.getElementById('point-size-value');
+        const opacityLabel  = document.getElementById('opacity-value');
+
+        if (sizeSlider) {
+            sizeSlider.dataset.auto = 'true';
+            const def = this.computeDefaultPointSize();
+            sizeSlider.value = def;
+            if (sizeLabel) sizeLabel.textContent = 'Auto';
+        }
+        if (opacitySlider) {
+            opacitySlider.value = 0.7;
+            if (opacityLabel) opacityLabel.textContent = '0.70';
+        }
+        this.applyPointStyleLive();
+    }
+
+    /** Initialize the size slider to the auto-computed default after data load. */
+    initPointSizeSlider() {
+        const slider = document.getElementById('point-size-slider');
+        const label  = document.getElementById('point-size-value');
+        if (!slider) return;
+        const def = this.computeDefaultPointSize();
+        slider.value = def;
+        slider.dataset.auto = 'true';
+        if (label) label.textContent = 'Auto';
+    }
+
+    /** Restyle the existing Plotly traces in-place (no data re-fetch). */
+    applyPointStyleLive() {
+        const plotDiv = document.getElementById('plotly-div');
+        if (!plotDiv || !plotDiv.data || plotDiv.data.length === 0) return;
+        const size    = this.getMarkerSize();
+        const opacity = this.getMarkerOpacity();
+        const traceIndices = plotDiv.data.map((_, i) => i);
+        Plotly.restyle('plotly-div', { 'marker.size': size, 'marker.opacity': opacity }, traceIndices);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+
     plotData(data) {
         // 处理颜色配置
         let markerConfig = {
-            size: data.size || 3,
-            opacity: 0.7
+            size: this.getMarkerSize(),
+            opacity: this.getMarkerOpacity()
         };
 
         let traces = [];
@@ -2101,8 +2565,8 @@ class SingleCellAnalysis {
                             name: category, // 设置trace名称，这将显示在legend中
                             marker: {
                                 color: color,
-                                size: data.size || 3,
-                                opacity: 0.7
+                                size: this.getMarkerSize(),
+                                opacity: this.getMarkerOpacity()
                             },
                             text: categoryText,
                             hovertemplate: '%{text}<extra></extra>',
@@ -2177,8 +2641,8 @@ class SingleCellAnalysis {
                 type: 'scattergl',
                 marker: {
                     color: 'blue',
-                    size: data.size || 3,
-                    opacity: 0.7
+                    size: this.getMarkerSize(),
+                    opacity: this.getMarkerOpacity()
                 },
                 text: data.hover_text || [],
                 hovertemplate: '%{text}<extra></extra>',
@@ -2323,7 +2787,133 @@ class SingleCellAnalysis {
         });
     }
 
-    selectAnalysisCategory(category) {
+    syncPanelHeight() {
+        const leftMain  = document.getElementById('left-main-panel');
+        const dataStatus = document.getElementById('data-status');
+        const vizPanel  = document.getElementById('viz-panel');
+        if (!leftMain || !vizPanel) return;
+        const dsH = (dataStatus && !dataStatus.classList.contains('d-none'))
+            ? dataStatus.offsetHeight : 0;
+        const vpH = vizPanel.offsetHeight;
+        if (dsH + vpH > 0) {
+            leftMain.style.minHeight = (dsH + vpH) + 'px';
+        }
+    }
+
+    updateAdataStatus(data, diff = null) {
+        const content = document.getElementById('adata-status-content');
+        if (!content) return;
+
+        // No data loaded yet — show placeholder
+        if (!data) {
+            content.innerHTML = `
+                <div class="d-flex flex-column align-items-center justify-content-center text-center text-muted h-100" style="min-height:160px">
+                    <i class="fas fa-database fa-2x mb-3 opacity-25"></i>
+                    <p class="small mb-0">${this.currentLang === 'zh'
+                        ? '请在右方上传 h5ad 文件<br>或从代码编辑器加载 adata'
+                        : 'Upload an h5ad file on the right<br>or load adata from the code editor'}</p>
+                </div>`;
+            return;
+        }
+
+        // Small bordered chip for each key name
+        const chip = k => `<span class="adata-key-chip">${k}</span>`;
+
+        const labelStyle = 'font-size:0.72rem;min-width:40px;flex-shrink:0;color:#6c757d;font-weight:500';
+        const row = (label, valueHtml) =>
+            `<div class="d-flex align-items-start gap-2 mb-2">
+                <span style="${labelStyle}">${label}</span>
+                <span style="line-height:1.8">${valueHtml}</span>
+            </div>`;
+
+        // ── Full current structure ───────────────────────────────────────────
+        const cells = (data.n_cells || 0).toLocaleString();
+        const genes = (data.n_genes || 0).toLocaleString();
+        let html = row('shape', `<span class="adata-key-chip" style="font-weight:600">${cells} × ${genes}</span>`);
+
+        // ── Data state (preprocessing status) — directly below shape ─────────
+        const ds = data.data_state;
+        if (ds && Object.keys(ds).length > 0) {
+            const badge = (label, color, title='') =>
+                `<span class="badge rounded-pill text-bg-${color} me-1" style="font-size:0.65rem" ${title ? `title="${title}"` : ''}>${label}</span>`;
+
+            const dtype = ds.is_int ? this.t('status.dsInt') : this.t('status.dsFloat');
+            const maxVal = ds.x_max !== undefined ? ds.x_max.toLocaleString(undefined, {maximumFractionDigits: 3}) : '?';
+            html += row('X', `<span class="adata-key-chip">${this.t('status.dsMax')}: <b>${maxVal}</b></span> <span class="adata-key-chip">${dtype}</span>`);
+
+            let stateBadges = '';
+            if (ds.is_normalized === true)
+                stateBadges += badge(this.t('status.dsNorm'), 'success', this.t('status.dsNormTip'));
+            else if (ds.is_normalized === false)
+                stateBadges += badge(this.t('status.dsRaw'), 'secondary', this.t('status.dsRawTip'));
+            if (ds.is_log1p === true)
+                stateBadges += badge('log1p', 'info', this.t('status.dsLog1pTip'));
+            if (ds.is_scaled === true)
+                stateBadges += badge(this.t('status.dsScaled'), 'warning', this.t('status.dsScaledTip'));
+            if (ds.estimated_target_sum)
+                stateBadges += badge(`target_sum ≈ ${ds.estimated_target_sum.toLocaleString()}`, 'primary', this.t('status.dsTargetTip'));
+            if (stateBadges) html += row('state', stateBadges);
+        }
+
+        const obs = data.obs_columns || [];
+        if (obs.length) html += row('obs', obs.map(chip).join(''));
+
+        const vr = data.var_columns || [];
+        if (vr.length) html += row('var', vr.map(chip).join(''));
+
+        const uns = data.uns_keys || [];
+        if (uns.length) html += row('uns', uns.map(chip).join(''));
+
+        const obsm = (data.embeddings || []).map(e => `X_${e}`);
+        if (obsm.length) html += row('obsm', obsm.map(chip).join(''));
+
+        const lyr = data.layers || [];
+        if (lyr.length) html += row('layers', lyr.map(chip).join(''));
+
+        // ── Last operation diff (reset each time) ───────────────────────────
+        if (diff) {
+            const [cb, gb] = diff.shape_before;
+            const [ca, ga] = diff.shape_after;
+            const slotColor = { obs:'primary', var:'success', uns:'warning',
+                                obsm:'info', obsp:'secondary', layers:'danger' };
+            const changes = diff.changes || {};
+            let diffHtml = '';
+
+            if (cb !== ca || gb !== ga) {
+                diffHtml += `<span class="adata-key-chip text-muted">${cb.toLocaleString()}×${gb.toLocaleString()}</span>`
+                    + `<i class="fas fa-arrow-right mx-1 text-muted" style="font-size:0.55rem;vertical-align:middle"></i>`
+                    + `<span class="adata-key-chip text-success fw-semibold">${ca.toLocaleString()}×${ga.toLocaleString()}</span> `;
+            }
+            for (const [slot, ch] of Object.entries(changes)) {
+                const col = slotColor[slot] || 'secondary';
+                const badge = `<span class="badge rounded-pill text-bg-${col} me-1" style="font-size:0.6rem;vertical-align:middle">${slot}</span>`;
+                if (ch.added)
+                    diffHtml += badge + `<span class="text-success me-1">+</span>`
+                        + ch.added.map(chip).join('') + ' ';
+                if (ch.removed)
+                    diffHtml += badge + `<span class="text-danger me-1">−</span>`
+                        + ch.removed.map(chip).join('') + ' ';
+            }
+            if (!diffHtml) diffHtml = `<span class="text-muted fst-italic" style="font-size:0.72rem">no changes</span>`;
+            diffHtml += `<span class="text-muted ms-1" style="font-size:0.7rem">${diff.duration}s</span>`;
+
+            html += `<hr class="my-2">` + row('diff', diffHtml);
+        }
+
+        content.innerHTML = html;
+    }
+
+    showParameterPlaceholder() {
+        const parameterContent = document.getElementById('parameter-content');
+        if (!parameterContent) return;
+        parameterContent.innerHTML = `
+            <div class="d-flex flex-column align-items-center justify-content-center text-center text-muted py-5" style="min-height:160px">
+                <i class="fas fa-hand-pointer fa-2x mb-3 opacity-50"></i>
+                <p class="mb-0 small" data-i18n="panel.selectAnalysis">${this.t('panel.selectAnalysis')}</p>
+            </div>`;
+    }
+
+    selectAnalysisCategory(category, { silent = false } = {}) {
         this.currentCategory = category;
         const parameterContent = document.getElementById('parameter-content');
         
@@ -2348,11 +2938,11 @@ class SingleCellAnalysis {
             ],
             'dimreduction': [
                 { id: 'pca', nameKey: 'tools.pca', icon: 'fas fa-chart-line', descKey: 'tools.pcaDesc' },
+                { id: 'neighbors', nameKey: 'tools.neighbors', icon: 'fas fa-network-wired', descKey: 'tools.neighborsDesc' },
                 { id: 'umap', nameKey: 'tools.umap', icon: 'fas fa-map', descKey: 'tools.umapDesc' },
                 { id: 'tsne', nameKey: 'tools.tsne', icon: 'fas fa-dot-circle', descKey: 'tools.tsneDesc' }
             ],
             'clustering': [
-                { id: 'neighbors', nameKey: 'tools.neighbors', icon: 'fas fa-network-wired', descKey: 'tools.neighborsDesc' },
                 { id: 'leiden', nameKey: 'tools.leiden', icon: 'fas fa-object-group', descKey: 'tools.leidenDesc' },
                 { id: 'louvain', nameKey: 'tools.louvain', icon: 'fas fa-layer-group', descKey: 'tools.louvainDesc' }
             ],
@@ -2361,6 +2951,17 @@ class SingleCellAnalysis {
                 { id: 'coming_soon', nameKey: 'tools.trajectory', icon: 'fas fa-route', descKey: 'tools.trajectoryDesc' },
                 { id: 'coming_soon', nameKey: 'tools.diff', icon: 'fas fa-not-equal', descKey: 'tools.diffDesc' },
                 { id: 'coming_soon', nameKey: 'tools.enrichment', icon: 'fas fa-sitemap', descKey: 'tools.enrichmentDesc' }
+            ],
+            'cell_annotation': [
+                { id: 'celltypist',   nameKey: 'tools.celltypist',   icon: 'fas fa-tag',    descKey: 'tools.celltypistDesc' },
+                { id: 'gpt4celltype', nameKey: 'tools.gpt4celltype', icon: 'fas fa-robot',  descKey: 'tools.gpt4celltypeDesc' },
+                { id: 'scsa',         nameKey: 'tools.scsa',         icon: 'fas fa-star',   descKey: 'tools.scsaDesc' }
+            ],
+            'trajectory': [
+                { id: 'diffusion_map', nameKey: 'tools.diffusionmap', icon: 'fas fa-project-diagram', descKey: 'tools.diffusionmapDesc' },
+                { id: 'slingshot',     nameKey: 'tools.slingshot',    icon: 'fas fa-route',           descKey: 'tools.slingshotDesc' },
+                { id: 'palantir',      nameKey: 'tools.palantir',     icon: 'fas fa-compass',         descKey: 'tools.palantirDesc' },
+                { id: 'sctour',        nameKey: 'tools.sctour',       icon: 'fas fa-brain',           descKey: 'tools.sctourDesc' }
             ]
         };
         
@@ -2386,22 +2987,59 @@ class SingleCellAnalysis {
             parameterContent.appendChild(toolDiv);
         });
         
-        this.addToLog(this.t('panel.categorySelected') + ` ${this.getCategoryName(category)}`);
+        // Show traj-viz-panel only for trajectory category, hide for all others
+        const trajPanel = document.getElementById('traj-viz-panel');
+        if (trajPanel) {
+            if (category === 'trajectory') {
+                trajPanel.style.display = '';
+                this.updateTrajVizSelects();
+            } else {
+                trajPanel.style.display = 'none';
+            }
+        }
+
+        if (!silent) this.addToLog(this.t('panel.categorySelected') + ` ${this.getCategoryName(category)}`);
     }
 
     getCategoryName(category) {
         const names = {
             'preprocessing': this.t('nav.preprocessing'),
-            'dimreduction': this.t('nav.dimReduction'),
-            'clustering': this.t('nav.clustering'),
-            'omicverse': this.t('nav.omicverse')
+            'dimreduction': this.t('nav.dimReductionSub'),
+            'clustering': this.t('nav.clusteringSub'),
+            'omicverse': this.t('nav.omicverse'),
+            'cell_annotation': this.t('nav.cellAnnotation'),
+            'trajectory': this.t('nav.trajectory')
         };
         return names[category] || category;
     }
 
     showParameterDialog(tool) { this.renderParameterForm(tool); }
 
+    /** Save / restore parameter values across form re-renders. */
+    _restoreAndTrackParams(tool, container) {
+        const cache = this.paramCache[tool] || {};
+        container.querySelectorAll('input, select').forEach(el => {
+            if (!el.id) return;
+            // Restore cached value
+            if (el.id in cache) {
+                if (el.type === 'checkbox') el.checked = !!cache[el.id];
+                else el.value = cache[el.id];
+            }
+            // Track future changes
+            const save = () => {
+                if (!this.paramCache[tool]) this.paramCache[tool] = {};
+                this.paramCache[tool][el.id] = el.type === 'checkbox' ? el.checked : el.value;
+            };
+            el.addEventListener('input', save);
+            el.addEventListener('change', save);
+        });
+    }
+
     renderParameterForm(tool, toolName = '', toolDesc = '') {
+        // Annotation tools use a custom multi-step renderer
+        if (tool === 'celltypist' || tool === 'gpt4celltype' || tool === 'scsa') {
+            return this.renderAnnotationForm(tool, toolName, toolDesc);
+        }
         this.currentTool = tool;
         const resolvedName = toolName && toolName.startsWith('tools.') ? this.t(toolName) : toolName;
         const resolvedDesc = toolDesc && toolDesc.startsWith('tools.') ? this.t(toolDesc) : toolDesc;
@@ -2442,6 +3080,7 @@ class SingleCellAnalysis {
                 </div>
             </div>`;
         parameterContent.innerHTML = this.translateFormHtml(formHTML);
+        this._restoreAndTrackParams(tool, parameterContent);
 
         const runBtn = document.getElementById('inlineRunBtn');
         if (runBtn) {
@@ -2501,6 +3140,301 @@ class SingleCellAnalysis {
                 target.value = value;
             }
         });
+    }
+
+    // ── Annotation Tools ──────────────────────────────────────────────────────
+
+    renderAnnotationForm(tool, toolNameKey = '', toolDescKey = '') {
+        this.currentTool = tool;
+        this.currentToolLabelKey = toolNameKey;
+        this.currentToolDescKey = toolDescKey;
+        this.currentToolLabel = toolNameKey.startsWith('tools.') ? this.t(toolNameKey) : toolNameKey;
+        this.currentToolDesc  = toolDescKey.startsWith('tools.')  ? this.t(toolDescKey)  : toolDescKey;
+
+        const paramEl = document.getElementById('parameter-content');
+        if (!paramEl) return;
+
+        const backCat = this.currentCategory || 'cell_annotation';
+        const obsOpts = (this.currentData?.obs_columns || [])
+            .map(c => `<option value="${c}">${c}</option>`).join('');
+
+        const header = `
+            <div class="d-flex align-items-center justify-content-between mb-2">
+                <div>
+                    <h6 class="mb-1"><i class="fas fa-sliders-h me-2 text-primary"></i>${this.currentToolLabel}</h6>
+                    <small class="text-muted">${this.currentToolDesc}</small>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary"
+                    onclick="singleCellApp.selectAnalysisCategory('${backCat}')">返回工具列表</button>
+            </div>`;
+
+        let body = '';
+        if (tool === 'celltypist') {
+            body = `
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">模型文件路径 <span class="text-muted">(本地 .pkl)</span></label>
+                <input type="text" class="form-control form-control-sm" id="pkl_path"
+                    placeholder="下载后自动填入，或手动输入路径">
+            </div>
+            <div class="mb-2">
+                <button class="btn btn-sm btn-outline-secondary w-100" id="fetchModelsBtn">
+                    <i class="fas fa-cloud-download-alt me-1"></i>从 CellTypist 获取模型列表
+                </button>
+                <div id="ct-model-list" class="mt-2" style="display:none">
+                    <select class="form-select form-select-sm" id="celltypist_model_select">
+                        <option value="">-- 选择模型 --</option>
+                    </select>
+                    <div id="ct-model-desc" class="text-muted small mt-1"></div>
+                    <button class="btn btn-sm btn-primary mt-2 w-100" id="downloadModelBtn" disabled>
+                        <i class="fas fa-download me-1"></i>下载选中模型
+                    </button>
+                    <div id="ct-dl-status" class="text-muted small mt-1"></div>
+                </div>
+            </div>
+            <div class="d-grid mt-3">
+                <button class="btn btn-success" id="annoRunBtn">
+                    <i class="fas fa-play me-1"></i>运行注释
+                </button>
+            </div>`;
+        } else if (tool === 'gpt4celltype') {
+            body = `
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">聚类键</label>
+                <select class="form-select form-select-sm" id="cluster_key">
+                    ${obsOpts || '<option value="leiden">leiden</option>'}
+                </select>
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">组织类型</label>
+                <input type="text" class="form-control form-control-sm" id="tissuename"
+                    placeholder="e.g. PBMC, Brain, Liver">
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">物种</label>
+                <input type="text" class="form-control form-control-sm" id="speciename" value="human">
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">LLM 提供商</label>
+                <select class="form-select form-select-sm" id="provider">
+                    <option value="qwen">Qwen (通义千问)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="kimi">Kimi (Moonshot)</option>
+                </select>
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">模型名称</label>
+                <input type="text" class="form-control form-control-sm" id="model" value="qwen-plus">
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">API Key</label>
+                <input type="password" class="form-control form-control-sm" id="api_key"
+                    placeholder="留空则读取 AGI_API_KEY 环境变量">
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">Base URL <span class="text-muted">(可选)</span></label>
+                <input type="text" class="form-control form-control-sm" id="base_url"
+                    placeholder="自定义 OpenAI 兼容端点">
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">Top marker 基因数</label>
+                <input type="number" class="form-control form-control-sm" id="topgenenumber"
+                    value="10" min="3" max="50">
+            </div>
+            <div class="d-grid mt-3">
+                <button class="btn btn-success" id="annoRunBtn">
+                    <i class="fas fa-play me-1"></i>运行注释
+                </button>
+            </div>`;
+        } else if (tool === 'scsa') {
+            body = `
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">聚类键</label>
+                <select class="form-select form-select-sm" id="cluster_key">
+                    ${obsOpts || '<option value="leiden">leiden</option>'}
+                </select>
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">SCSA 数据库路径</label>
+                <div class="input-group input-group-sm">
+                    <input type="text" class="form-control" id="db_path"
+                        placeholder="留空将自动下载">
+                    <button class="btn btn-outline-secondary" id="downloadDbBtn" type="button">
+                        <i class="fas fa-download"></i> 下载
+                    </button>
+                </div>
+                <div id="scsa-dl-status" class="text-muted small mt-1"></div>
+            </div>
+            <div class="row g-2 mb-2">
+                <div class="col-6">
+                    <label class="form-label small fw-semibold">倍数变化阈值</label>
+                    <input type="number" class="form-control form-control-sm" id="foldchange"
+                        value="1.5" min="0.5" max="10" step="0.5">
+                </div>
+                <div class="col-6">
+                    <label class="form-label small fw-semibold">P 值阈值</label>
+                    <input type="number" class="form-control form-control-sm" id="pvalue"
+                        value="0.05" min="0.001" max="0.1" step="0.005">
+                </div>
+            </div>
+            <div class="row g-2 mb-2">
+                <div class="col-6">
+                    <label class="form-label small fw-semibold">细胞类型</label>
+                    <select class="form-select form-select-sm" id="celltype">
+                        <option value="normal">Normal</option>
+                        <option value="cancer">Cancer</option>
+                    </select>
+                </div>
+                <div class="col-6">
+                    <label class="form-label small fw-semibold">参考数据库</label>
+                    <select class="form-select form-select-sm" id="target">
+                        <option value="cellmarker">CellMarker</option>
+                        <option value="panglaoDB">PanglaoDB</option>
+                        <option value="cancersea">CancerSEA</option>
+                    </select>
+                </div>
+            </div>
+            <div class="parameter-input mb-2">
+                <label class="form-label small fw-semibold">组织 <span class="text-muted">(留空=All)</span></label>
+                <input type="text" class="form-control form-control-sm" id="tissue" value="All">
+            </div>
+            <div class="d-grid mt-3">
+                <button class="btn btn-success" id="annoRunBtn">
+                    <i class="fas fa-play me-1"></i>运行注释
+                </button>
+            </div>`;
+        }
+
+        paramEl.innerHTML = this.translateFormHtml(`<div class="mb-3">${header}<div class="border rounded p-3">${body}</div></div>`);
+
+        // ── Attach events ──────────────────────────────────────────────────
+        if (tool === 'celltypist') {
+            const fetchBtn    = document.getElementById('fetchModelsBtn');
+            const modelList   = document.getElementById('ct-model-list');
+            const modelSelect = document.getElementById('celltypist_model_select');
+            const dlBtn       = document.getElementById('downloadModelBtn');
+            const dlStatus    = document.getElementById('ct-dl-status');
+            const modelDesc   = document.getElementById('ct-model-desc');
+            const pklInput    = document.getElementById('pkl_path');
+
+            fetchBtn.addEventListener('click', () => {
+                fetchBtn.disabled = true;
+                fetchBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>获取中...';
+                fetch('/api/annotation/celltypist_models')
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) throw new Error(d.error);
+                        modelSelect.innerHTML = '<option value="">-- 选择模型 --</option>' +
+                            d.models.map(m => {
+                                const label = `${m.model}  (${m.No_celltypes || '?'} 类型)`;
+                                return `<option value="${m.model}" data-desc="${(m.description||'').replace(/"/g,"'")}">${label}</option>`;
+                            }).join('');
+                        modelList.style.display = 'block';
+                        fetchBtn.innerHTML = '<i class="fas fa-check me-1"></i>模型列表已加载';
+                    })
+                    .catch(err => {
+                        fetchBtn.disabled = false;
+                        fetchBtn.innerHTML = '<i class="fas fa-cloud-download-alt me-1"></i>从 CellTypist 获取模型列表';
+                        alert('获取模型列表失败: ' + err.message);
+                    });
+            });
+
+            modelSelect.addEventListener('change', () => {
+                const opt = modelSelect.options[modelSelect.selectedIndex];
+                modelDesc.textContent = opt?.dataset.desc || '';
+                dlBtn.disabled = !modelSelect.value;
+                // Auto-fill path if already downloaded
+                const modelName = modelSelect.value;
+                if (modelName) {
+                    fetch(`/api/annotation/celltypist_model_path?model_name=${encodeURIComponent(modelName)}`)
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.exists) {
+                                pklInput.value = d.path;
+                                dlStatus.textContent = '✓ 已找到本地模型: ' + d.path;
+                                dlBtn.innerHTML = '<i class="fas fa-check me-1"></i>已下载';
+                            } else {
+                                pklInput.value = '';
+                                dlStatus.textContent = '';
+                                dlBtn.disabled = false;
+                                dlBtn.innerHTML = '<i class="fas fa-download me-1"></i>下载选中模型';
+                            }
+                        })
+                        .catch(() => {});
+                } else {
+                    pklInput.value = '';
+                    dlStatus.textContent = '';
+                }
+            });
+
+            dlBtn.addEventListener('click', () => {
+                const modelName = modelSelect.value;
+                if (!modelName) return;
+                dlBtn.disabled = true;
+                dlBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>下载中...';
+                dlStatus.textContent = '正在下载，请稍候...';
+                fetch('/api/annotation/download_celltypist_model', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({model_name: modelName})
+                })
+                .then(r => r.json())
+                .then(d => {
+                    if (d.error) throw new Error(d.error);
+                    pklInput.value = d.path;
+                    dlStatus.textContent = '✓ 下载完成: ' + d.path;
+                    dlBtn.innerHTML = '<i class="fas fa-check me-1"></i>已下载';
+                })
+                .catch(err => {
+                    dlBtn.disabled = false;
+                    dlBtn.innerHTML = '<i class="fas fa-download me-1"></i>下载选中模型';
+                    dlStatus.textContent = '下载失败: ' + err.message;
+                });
+            });
+        }
+
+        if (tool === 'scsa') {
+            const dlBtn    = document.getElementById('downloadDbBtn');
+            const dlStatus = document.getElementById('scsa-dl-status');
+            const dbInput  = document.getElementById('db_path');
+
+            dlBtn.addEventListener('click', () => {
+                dlBtn.disabled = true;
+                dlBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                dlStatus.textContent = '正在下载 SCSA 数据库，请稍候（约 15 MB）...';
+                fetch('/api/annotation/download_scsa_db', {method: 'POST'})
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.error) throw new Error(d.error);
+                        dbInput.value = d.path;
+                        dlStatus.textContent = '✓ 下载完成: ' + d.path;
+                        dlBtn.innerHTML = '<i class="fas fa-check"></i>';
+                    })
+                    .catch(err => {
+                        dlBtn.disabled = false;
+                        dlBtn.innerHTML = '<i class="fas fa-download"></i> 下载';
+                        dlStatus.textContent = '下载失败: ' + err.message;
+                    });
+            });
+        }
+
+        // Common run button
+        const runBtn = document.getElementById('annoRunBtn');
+        if (runBtn) {
+            runBtn.addEventListener('click', () => {
+                const params = {};
+                paramEl.querySelectorAll('input, select').forEach(el => {
+                    if (!el.id) return;
+                    if (el.type === 'number') {
+                        if (el.value !== '') params[el.id] = parseFloat(el.value);
+                    } else if (el.type === 'checkbox') {
+                        params[el.id] = el.checked;
+                    } else {
+                        if (el.value !== '') params[el.id] = el.value;
+                    }
+                });
+                this.runTool(tool, params);
+            });
+        }
     }
 
     updateCodeCellPlaceholders() {
@@ -2698,8 +3632,129 @@ class SingleCellAnalysis {
                     <label>分辨率</label>
                     <input type="number" class="form-control" id="resolution" value="1.0" min="0.1" max="3.0" step="0.1">
                 </div>
-            `
+            `,
         };
+
+        // ── Trajectory tools (built dynamically from current obs columns) ──────
+        const obsColumns = (this.currentData && this.currentData.obs_columns) ? this.currentData.obs_columns : [];
+        const embeddingKeys = (this.currentData && this.currentData.embeddings) ? this.currentData.embeddings : [];
+        const clusterOpts = ['<option value="">-- 选择列 --</option>']
+            .concat(obsColumns.map(c => `<option value="${c}">${c}</option>`)).join('');
+        const embeddingOpts = ['<option value="">-- 自动检测 --</option>',
+            '<option value="X_pca">X_pca</option>']
+            .concat(embeddingKeys.filter(k => k !== 'pca').map(k => `<option value="X_${k}">X_${k}</option>`))
+            .join('');
+        const pseudotimeOpts = ['<option value="">-- 不设置 --</option>']
+            .concat(obsColumns.filter(c => c.includes('pseudotime') || c.includes('dpt') || c.includes('paga'))
+                .map(c => `<option value="${c}">${c}</option>`)).join('');
+
+        const trajCommonFields = `
+            <div class="row g-2">
+                <div class="col-12">
+                    <label class="form-label">聚类列 (groupby)</label>
+                    <select class="form-control" id="groupby">${clusterOpts}</select>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">低维表示 (use_rep)</label>
+                    <select class="form-control" id="use_rep">${embeddingOpts}</select>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">主成分数 (n_comps)</label>
+                    <input type="number" class="form-control" id="n_comps" value="50" min="10" max="200">
+                </div>
+                <div class="col-12">
+                    <label class="form-label">起始细胞类型 (origin_cells)</label>
+                    <input type="text" class="form-control" id="origin_cells" placeholder="例如: Ductal">
+                </div>`;
+
+        const trajParameterMap = {
+            'diffusion_map': trajCommonFields + `
+            </div>
+            <small class="text-muted d-block mt-2">将在 obs 中添加 dpt_pseudotime 列，可用于可视化着色。</small>`,
+
+            'slingshot': trajCommonFields + `
+                <div class="col-12">
+                    <label class="form-label">终止细胞类型 (terminal_cells，逗号分隔)</label>
+                    <input type="text" class="form-control" id="terminal_cells" placeholder="例如: Alpha,Beta">
+                </div>
+                <div class="col-12">
+                    <label class="form-label">训练轮数 (num_epochs)</label>
+                    <input type="number" class="form-control" id="num_epochs" value="1" min="1" max="100">
+                </div>
+            </div>
+            <small class="text-muted d-block mt-2">将在 obs 中添加 slingshot_pseudotime 列。</small>`,
+
+            'palantir': trajCommonFields + `
+                <div class="col-12">
+                    <label class="form-label">终止细胞类型 (terminal_cells，逗号分隔)</label>
+                    <input type="text" class="form-control" id="terminal_cells" placeholder="例如: Alpha,Beta,Delta">
+                </div>
+                <div class="col-12">
+                    <label class="form-label">路标点数 (num_waypoints)</label>
+                    <input type="number" class="form-control" id="num_waypoints" value="500" min="100" max="2000">
+                </div>
+            </div>
+            <small class="text-muted d-block mt-2">将在 obs 中添加 palantir_pseudotime 和 palantir_entropy 列。</small>`,
+
+            'paga': (() => {
+                const basisOpts = ['<option value="umap">umap</option>',
+                    '<option value="tsne">tsne</option>',
+                    '<option value="draw_graph_fa">draw_graph_fa</option>']
+                    .concat(embeddingKeys.filter(k => !['umap','tsne','draw_graph_fa'].includes(k))
+                        .map(k => `<option value="${k}">${k}</option>`)).join('');
+                return `
+                <div class="row g-2">
+                    <div class="col-12">
+                        <label class="form-label">聚类列 (groups)</label>
+                        <select class="form-control" id="groups">${clusterOpts}</select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">拟时序列 (use_time_prior)</label>
+                        <select class="form-control" id="use_time_prior">
+                            <option value="">-- 不设置 --</option>
+                            ${obsColumns.filter(c => c.includes('pseudotime') || c.includes('dpt') || c.includes('entropy'))
+                                .map(c => `<option value="${c}">${c}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">低维表示 (use_rep，用于重算邻居)</label>
+                        <select class="form-control" id="use_rep">${embeddingOpts}</select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">可视化嵌入 (basis)</label>
+                        <select class="form-control" id="basis">${basisOpts}</select>
+                    </div>
+                </div>
+                <small class="text-muted d-block mt-2">将生成 PAGA 图并在结果区域显示。</small>`;
+            })(),
+
+            'sctour': `
+                <div class="row g-2">
+                    <div class="col-12">
+                        <label class="form-label">聚类列 (groupby)</label>
+                        <select class="form-control" id="groupby">${clusterOpts}</select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">低维表示 (use_rep)</label>
+                        <select class="form-control" id="use_rep">${embeddingOpts}</select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">主成分数 (n_comps)</label>
+                        <input type="number" class="form-control" id="n_comps" value="50" min="10" max="200">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">lec 重建权重 (alpha_recon_lec)</label>
+                        <input type="number" class="form-control" id="alpha_recon_lec" value="0.5" min="0" max="1" step="0.1">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">lode 重建权重 (alpha_recon_lode)</label>
+                        <input type="number" class="form-control" id="alpha_recon_lode" value="0.5" min="0" max="1" step="0.1">
+                    </div>
+                </div>
+                <small class="text-muted d-block mt-2">需要原始 count 数据在 adata.X。将在 obs 中添加 sctour_pseudotime 列。</small>`
+        };
+
+        if (tool in trajParameterMap) return trajParameterMap[tool];
 
         return parameters[tool] || `<p>${this.t('parameter.none')}</p>`;
     }
@@ -2727,10 +3782,18 @@ class SingleCellAnalysis {
             'neighbors': this.t('tools.neighbors'),
             'leiden': this.t('tools.leiden'),
             'louvain': this.t('tools.louvain'),
-            'filter_cells': this.t('tools.filterCells'),
-            'filter_genes': this.t('tools.filterGenes'),
+            'filter_cells':  this.t('tools.filterCells'),
+            'filter_genes':  this.t('tools.filterGenes'),
             'filter_outliers': this.t('tools.filterOutliers'),
-            'doublets': this.t('tools.doublets')
+            'doublets':      this.t('tools.doublets'),
+            'celltypist':    this.t('tools.celltypist'),
+            'gpt4celltype':  this.t('tools.gpt4celltype'),
+            'scsa':          this.t('tools.scsa'),
+            'diffusion_map': this.t('tools.diffusionmap'),
+            'slingshot':     this.t('tools.slingshot'),
+            'palantir':      this.t('tools.palantir'),
+            'paga':          this.t('tools.paga'),
+            'sctour':        this.t('tools.sctour'),
         };
         const toolName = toolNames[tool] || tool;
         const runningText = this.currentLang === 'zh'
@@ -2755,14 +3818,37 @@ class SingleCellAnalysis {
                 alert(this.formatToolMessage(toolName, this.t('tool.execFailed'), data.error));
             } else {
                 this.currentData = data;
-                this.updateUI(data);
+                // Use refreshDataFromKernel so the current embedding/color selection
+                // is preserved instead of being reset to the first option.
+                this.refreshDataFromKernel(data);
                 this.addToLog(this.formatToolMessage(toolName, this.t('tool.completed')));
+                this.updateAdataStatus(data, data.diff || null);
+                requestAnimationFrame(() => this.syncPanelHeight());
                 this.showStatus(this.formatToolMessage(toolName, this.t('tool.completed')), false);
-                
-                // Auto-update plot if embedding is available
-                const embeddingSelect = document.getElementById('embedding-select');
-                if (embeddingSelect.value) {
-                    this.updatePlot();
+
+                // Auto-color by predicted annotation column if returned
+                if (data.predicted_col) {
+                    const colorSelect = document.getElementById('color-select');
+                    if (colorSelect) {
+                        colorSelect.value = 'obs:' + data.predicted_col;
+                        this.updatePlot();
+                    }
+                }
+
+                // Auto-color by pseudotime column if returned by trajectory tools
+                if (data.pseudotime_col) {
+                    const colorSelect = document.getElementById('color-select');
+                    if (colorSelect) {
+                        colorSelect.value = 'obs:' + data.pseudotime_col;
+                        this.updatePlot();
+                    }
+                    // Show trajectory visualization panel
+                    this.showTrajViz();
+                }
+
+                // Display figures returned by tools (e.g., PAGA graph)
+                if (data.figures && data.figures.length > 0) {
+                    this.showToolFigures(data.figures, toolName);
                 }
             }
         })
@@ -2774,27 +3860,213 @@ class SingleCellAnalysis {
         });
     }
 
-    saveData() {
+    showToolFigures(figures, toolName) {
+        // Show tool-generated figures (e.g., PAGA graph) in a modal overlay
+        const modalId = 'tool-figures-modal';
+        let modal = document.getElementById(modalId);
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = modalId;
+            modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+            modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+            document.body.appendChild(modal);
+        }
+        modal.innerHTML = '';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#1e1e2e;border-radius:12px;padding:20px;max-width:90vw;max-height:90vh;overflow:auto;position:relative;';
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;';
+        header.innerHTML = `<h6 style="color:#cdd6f4;margin:0">${toolName}</h6>
+            <button style="background:none;border:none;color:#cdd6f4;font-size:1.2rem;cursor:pointer;" onclick="document.getElementById('${modalId}').remove()">✕</button>`;
+        box.appendChild(header);
+        figures.forEach(fig => {
+            const img = document.createElement('img');
+            img.src = `data:image/png;base64,${fig}`;
+            img.style.cssText = 'max-width:100%;border-radius:8px;display:block;margin-bottom:8px;';
+            box.appendChild(img);
+        });
+        modal.appendChild(box);
+    }
+
+    // ── Trajectory Visualization ───────────────────────────────────────────
+
+    showTrajViz() {
+        const panel = document.getElementById('traj-viz-panel');
+        if (panel) {
+            panel.style.display = '';
+            this.updateTrajVizSelects();
+        }
+    }
+
+    toggleTrajViz() {
+        const body = document.getElementById('traj-viz-body');
+        const icon = document.getElementById('traj-viz-toggle-icon');
+        if (!body) return;
+        const collapsed = body.style.display === 'none';
+        body.style.display = collapsed ? '' : 'none';
+        if (icon) {
+            icon.className = collapsed ? 'fas fa-chevron-up' : 'fas fa-chevron-down';
+        }
+    }
+
+    togglePagaOptions(checked) {
+        const opts = document.getElementById('traj-paga-options');
+        if (opts) opts.style.display = checked ? '' : 'none';
+    }
+
+    updateTrajVizSelects() {
         if (!this.currentData) return;
-        
-        this.showStatus(this.t('status.downloadingData'), true);
-        this.addToLog(this.t('status.downloadStart'));
-        
-        fetch('/api/save', {
-            method: 'POST'
+        const obs      = this.currentData.obs_columns  || [];
+        const embeddings = this.currentData.embeddings || [];
+        const layers   = this.currentData.layers       || [];
+
+        // Pseudotime columns (for both embedding and heatmap)
+        const ptCols = obs.filter(c =>
+            c.includes('pseudotime') || c.includes('dpt_') || c === 'dpt_pseudotime'
+        );
+        const ptOpts = '<option value="">' + this.t('traj.autoDetect') + '</option>' +
+            ptCols.map(c => `<option value="${c}">${c}</option>`).join('');
+        for (const id of ['traj-pseudotime-col', 'traj-heatmap-pseudotime']) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = ptOpts;
+        }
+
+        // Embedding bases
+        const basisSel = document.getElementById('traj-basis');
+        if (basisSel) {
+            basisSel.innerHTML = embeddings
+                .map(e => `<option value="X_${e}">${e.toUpperCase()}</option>`)
+                .join('');
+        }
+
+        // PAGA groups (obs columns, prefer categorical)
+        const grpSel = document.getElementById('traj-paga-groups');
+        if (grpSel) {
+            grpSel.innerHTML = `<option value="">-- ${this.t('traj.selectCol')} --</option>` +
+                obs.map(c => `<option value="${c}">${c}</option>`).join('');
+        }
+
+        // Layer selector
+        const layerSel = document.getElementById('traj-heatmap-layer');
+        if (layerSel) {
+            layerSel.innerHTML = '<option value="">X (default)</option>' +
+                layers.map(l => `<option value="${l}">${l}</option>`).join('');
+        }
+    }
+
+    generateTrajEmbedding() {
+        const imgDiv = document.getElementById('traj-embedding-img');
+        if (!imgDiv) return;
+        imgDiv.innerHTML = '<div class="spinner-border spinner-border-sm text-primary"></div>';
+
+        const params = {
+            pseudotime_col:      (document.getElementById('traj-pseudotime-col')   || {}).value || '',
+            basis:               (document.getElementById('traj-basis')             || {}).value || 'X_umap',
+            cmap:                (document.getElementById('traj-cmap')              || {}).value || 'Reds',
+            point_size:          (document.getElementById('traj-point-size')        || {}).value || 3,
+            paga_overlay:        (document.getElementById('traj-paga-overlay')      || {}).checked || false,
+            paga_groups:         (document.getElementById('traj-paga-groups')       || {}).value || '',
+            paga_min_edge_width: (document.getElementById('traj-paga-min-edge')     || {}).value || 2,
+            paga_node_size_scale:(document.getElementById('traj-paga-node-scale')   || {}).value || 1.5,
+        };
+
+        fetch('/api/trajectory/plot_embedding', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params)
         })
-        .then(response => {
-            if (response.ok) {
-                return response.blob();
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                imgDiv.innerHTML = `<span class="text-danger small p-2">${data.error}</span>`;
             } else {
-                throw new Error(this.t('status.saveFailed'));
+                imgDiv.innerHTML =
+                    `<img src="data:image/png;base64,${data.figure}"
+                          style="max-width:100%;border-radius:6px;cursor:zoom-in;"
+                          onclick="singleCellApp.showToolFigures(['${data.figure}'], 'Pseudotime Embedding')">`;
             }
         })
-        .then(blob => {
+        .catch(e => {
+            imgDiv.innerHTML = `<span class="text-danger small p-2">${e.message}</span>`;
+        });
+    }
+
+    generateTrajHeatmap() {
+        const imgDiv = document.getElementById('traj-heatmap-img');
+        if (!imgDiv) return;
+        imgDiv.innerHTML = '<div class="spinner-border spinner-border-sm text-warning"></div>';
+
+        const params = {
+            genes:          (document.getElementById('traj-heatmap-genes')      || {}).value || '',
+            pseudotime_col: (document.getElementById('traj-heatmap-pseudotime') || {}).value || '',
+            layer:          (document.getElementById('traj-heatmap-layer')      || {}).value || '',
+            n_bins:         (document.getElementById('traj-heatmap-bins')       || {}).value || 50,
+            cmap:           (document.getElementById('traj-heatmap-cmap')       || {}).value || 'RdBu_r',
+        };
+
+        fetch('/api/trajectory/plot_heatmap', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                imgDiv.innerHTML = `<span class="text-danger small p-2">${data.error}</span>`;
+            } else {
+                imgDiv.innerHTML =
+                    `<img src="data:image/png;base64,${data.figure}"
+                          style="max-width:100%;border-radius:6px;cursor:zoom-in;"
+                          onclick="singleCellApp.showToolFigures(['${data.figure}'], 'Gene Trend Heatmap')">`;
+            }
+        })
+        .catch(e => {
+            imgDiv.innerHTML = `<span class="text-danger small p-2">${e.message}</span>`;
+        });
+    }
+
+    // ── end Trajectory Visualization ──────────────────────────────────────
+
+    saveData() {
+        if (!this.currentData) return;
+
+        const suggestedName = (this.currentData.filename || 'data')
+            .replace(/\.h5ad$/i, '') + '.h5ad';
+
+        this.showStatus(this.t('status.downloadingData'), true);
+        this.addToLog(this.t('status.downloadStart'));
+
+        fetch('/api/save', { method: 'POST' })
+        .then(response => {
+            if (response.ok) return response.blob();
+            throw new Error(this.t('status.saveFailed'));
+        })
+        .then(async blob => {
+            // Use native Save-As dialog when available (Chrome/Edge on HTTPS or localhost)
+            if (window.showSaveFilePicker) {
+                try {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName,
+                        types: [{ description: 'AnnData H5AD', accept: { 'application/x-hdf5': ['.h5ad'] } }]
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    this.hideStatus();
+                    this.addToLog(this.t('status.dataSaved'));
+                    this.showStatus(this.t('status.dataSaved'), false);
+                    return;
+                } catch (e) {
+                    // User cancelled the dialog — don't show error
+                    if (e.name === 'AbortError') { this.hideStatus(); return; }
+                    // Any other error: fall through to blob download
+                }
+            }
+            // Fallback: trigger browser download (browser will ask save location if configured to)
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `processed_${this.currentData.filename}`;
+            a.download = suggestedName;
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
@@ -2848,21 +4120,24 @@ class SingleCellAnalysis {
 
     checkStatus() {
         fetch('/api/status')
-        .then(response => response.json())
+        .then(r => r.json())
         .then(data => {
-            if (data.loaded) {
-                // If data is already loaded, update UI accordingly
-                this.currentData = {
-                    filename: data.filename,
-                    n_cells: data.cells,
-                    n_genes: data.genes
-                };
-                // Note: This is a simplified status, you might want to fetch full data
+            if (!data.loaded) return;
+            // Guard: ensure the response has the fields updateUI needs
+            if (!Array.isArray(data.embeddings)) {
+                console.warn('checkStatus: /api/status response missing embeddings field', data);
+                return;
             }
+            // Server has adata in memory — restore full UI without re-uploading
+            this.currentData = data;
+            this.updateUI(data);
+            this.updateAdataStatus(data);
+            requestAnimationFrame(() => this.syncPanelHeight());
+            this.addToLog(
+                `${this.t('upload.successDetail')}: ${data.n_cells} ${this.t('status.cells')}, ${data.n_genes} ${this.t('status.genes')}`
+            );
         })
-        .catch(error => {
-            console.log('Status check failed:', error);
-        });
+        .catch(err => { console.warn('checkStatus error:', err); });
     }
 
     showLoading(text = null) {
@@ -2882,14 +4157,35 @@ class SingleCellAnalysis {
     addToLog(message, type = 'info') {
         const log = document.getElementById('analysis-log');
         if (!log) return;
-        
+
         const timestamp = new Date().toLocaleTimeString();
-        const className = type === 'error' ? 'text-danger' : 'text-dark';
-        
         const logEntry = document.createElement('div');
-        logEntry.className = `mb-1 ${className}`;
-        logEntry.innerHTML = `<small class="text-muted">[${timestamp}]</small> ${message}`;
-        
+
+        if (type === 'error') {
+            logEntry.className = 'mb-1 text-danger';
+            logEntry.innerHTML = `<small class="text-muted">[${timestamp}]</small> ${message}`;
+        } else if (type === 'stdout') {
+            // Render captured Python print output as monospace terminal block
+            logEntry.className = 'mb-1';
+            const pre = document.createElement('pre');
+            pre.style.cssText = [
+                'font-size:0.75rem',
+                'margin:2px 0 2px 0',
+                'padding:4px 8px',
+                'background:var(--bs-light, #f8f9fa)',
+                'border-left:3px solid #6c757d',
+                'border-radius:0 4px 4px 0',
+                'white-space:pre-wrap',
+                'word-break:break-all',
+                'color:#495057'
+            ].join(';');
+            pre.textContent = message;
+            logEntry.appendChild(pre);
+        } else {
+            logEntry.className = 'mb-1 text-dark';
+            logEntry.innerHTML = `<small class="text-muted">[${timestamp}]</small> ${message}`;
+        }
+
         log.appendChild(logEntry);
         log.scrollTop = log.scrollHeight;
     }
@@ -3023,6 +4319,9 @@ class SingleCellAnalysis {
             if (vizToolbar) vizToolbar.style.display = 'flex';
             if (codeToolbarRow) codeToolbarRow.style.display = 'none';
 
+            // Scroll to top when switching to visualization view (JupyterLab-like behavior)
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
             // Update page title
             if (pageTitle) pageTitle.textContent = this.t('breadcrumb.title');
             if (breadcrumbTitle) breadcrumbTitle.textContent = this.t('breadcrumb.title');
@@ -3065,6 +4364,10 @@ class SingleCellAnalysis {
             }
             this.fetchKernelStats();
             this.fetchKernelVars();
+            // Ensure visualization adata is synced to kernel as odata when entering code view
+            if (this.currentData) {
+                fetch('/api/kernel/sync_odata', { method: 'POST' }).catch(() => {});
+            }
             if (this.openTabs.length === 0) {
                 this.openFileFromServer('default.ipynb');
             }
@@ -3105,26 +4408,26 @@ class SingleCellAnalysis {
         const cellId = `cell-${this.cellCounter}`;
 
         const cellHtml = `
-            <div class="code-cell" id="${cellId}">
+            <div class="code-cell" id="${cellId}" data-cell-counter="${this.cellCounter}">
                 <div class="code-cell-header">
-                    <span class="cell-number">In [${this.cellCounter}]:</span>
+                    <span class="cell-number">In [ ]:</span>
                     <div class="cell-toolbar">
                         <select class="form-select form-select-sm" onchange="singleCellApp.changeCellType('${cellId}', this.value)">
                             <option value="code" data-i18n="cell.typeCode">Code</option>
                             <option value="markdown" data-i18n="cell.typeMarkdown">Markdown</option>
                             <option value="raw" data-i18n="cell.typeRaw">Raw</option>
                         </select>
-                        <button type="button" class="btn btn-sm btn-success" onclick="singleCellApp.runCodeCell('${cellId}')" title="Run (Shift+Enter)" data-i18n-title="cell.run">
-                            <i class="feather-play"></i> <span data-i18n="cell.run">Run</span>
+                        <button type="button" class="btn btn-sm btn-success" onclick="singleCellApp.runCodeCell('${cellId}')" title="运行 (Shift+Enter)" data-i18n-title="cell.run">
+                            <i class="feather-play"></i>
                         </button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.toggleCellOutput('${cellId}')" title="Toggle output" data-i18n-title="cell.toggleOutput">
-                            <span data-i18n="cell.toggleOutput">Toggle output</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.toggleCellOutput('${cellId}')" title="折叠输出" data-i18n-title="cell.toggleOutput">
+                            <i class="fas fa-compress-alt"></i>
                         </button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.toggleCellOutputFull('${cellId}')" title="Hide output" data-i18n-title="cell.hideOutput">
-                            <span data-i18n="cell.hideOutput">Hide output</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.toggleCellOutputFull('${cellId}')" title="隐藏输出" data-i18n-title="cell.hideOutput">
+                            <i class="fas fa-eye-slash"></i>
                         </button>
-                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.clearCellOutput('${cellId}')" title="Clear output" data-i18n-title="cell.clearOutput">
-                            <span data-i18n="cell.clearOutput">Clear output</span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="singleCellApp.clearCellOutput('${cellId}')" title="清空输出" data-i18n-title="cell.clearOutput">
+                            <i class="fas fa-eraser"></i>
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-danger" onclick="singleCellApp.deleteCodeCell('${cellId}')" title="Delete" data-i18n-title="cell.delete">
                             <i class="feather-trash-2"></i>
@@ -3164,17 +4467,109 @@ class SingleCellAnalysis {
             if (highlightContainer) {
                 highlightContainer.style.height = textarea.style.height;
             }
-            if (cell.dataset.cellType === 'markdown') {
+            if (cellRoot && cellRoot.dataset.cellType === 'markdown') {
                 this.resizeMarkdownEditor(textarea);
             }
         };
 
         textarea.addEventListener('input', autoResize);
         textarea.addEventListener('keydown', (e) => {
+            // Shift+Enter: Run cell and create new cell below (JupyterLab-like behavior)
             if (e.shiftKey && e.key === 'Enter') {
                 e.preventDefault();
                 this.runCodeCell(cellId);
+
+                // After running, focus next cell or create new one
+                setTimeout(() => {
+                    const currentIndex = this.codeCells.indexOf(cellId);
+                    if (currentIndex === -1) return;
+
+                    if (currentIndex === this.codeCells.length - 1) {
+                        // Last cell - create new empty cell below
+                        this.addCodeCell();
+                        // Focus the newly created cell
+                        const newCellId = this.codeCells[this.codeCells.length - 1];
+                        const newCell = document.getElementById(newCellId);
+                        if (newCell) {
+                            const newTextarea = newCell.querySelector('.code-input');
+                            if (newTextarea) {
+                                newTextarea.focus();
+                            }
+                        }
+                    } else {
+                        // Not last cell - focus next cell
+                        const nextCellId = this.codeCells[currentIndex + 1];
+                        const nextCell = document.getElementById(nextCellId);
+                        if (nextCell) {
+                            const nextTextarea = nextCell.querySelector('.code-input');
+                            if (nextTextarea) {
+                                nextTextarea.focus();
+                            }
+                        }
+                    }
+                }, 100); // Small delay to ensure cell execution started
+                return;
             }
+
+            // Tab: Indent
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                const value = textarea.value;
+
+                if (start === end) {
+                    // No selection - insert 4 spaces at cursor
+                    if (!e.shiftKey) {
+                        // Tab: Insert spaces
+                        const indent = '    ';
+                        textarea.value = value.substring(0, start) + indent + value.substring(end);
+                        textarea.selectionStart = textarea.selectionEnd = start + indent.length;
+                    } else {
+                        // Shift+Tab: Remove up to 4 spaces before cursor
+                        const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+                        const beforeCursor = value.substring(lineStart, start);
+                        const spacesToRemove = Math.min(4, beforeCursor.match(/^ */)[0].length);
+                        if (spacesToRemove > 0) {
+                            textarea.value = value.substring(0, lineStart) +
+                                           value.substring(lineStart + spacesToRemove);
+                            textarea.selectionStart = textarea.selectionEnd = start - spacesToRemove;
+                        }
+                    }
+                } else {
+                    // Has selection - indent/dedent all selected lines
+                    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+                    const lineEnd = value.indexOf('\n', end);
+                    const selectedLines = value.substring(lineStart, lineEnd === -1 ? value.length : lineEnd);
+
+                    let newLines;
+                    if (!e.shiftKey) {
+                        // Tab: Add 4 spaces to each line
+                        newLines = selectedLines.split('\n').map(line => '    ' + line).join('\n');
+                    } else {
+                        // Shift+Tab: Remove up to 4 spaces from each line
+                        newLines = selectedLines.split('\n').map(line => {
+                            const match = line.match(/^( {1,4})/);
+                            return match ? line.substring(match[1].length) : line;
+                        }).join('\n');
+                    }
+
+                    textarea.value = value.substring(0, lineStart) + newLines +
+                                   value.substring(lineEnd === -1 ? value.length : lineEnd);
+
+                    // Restore selection
+                    textarea.selectionStart = lineStart;
+                    textarea.selectionEnd = lineStart + newLines.length;
+                }
+
+                // Trigger input event to update syntax highlighting
+                textarea.dispatchEvent(new Event('input'));
+                return;
+            }
+        });
+        // Track last focused cell for toolbar run button
+        textarea.addEventListener('focus', () => {
+            this.lastFocusedCellId = cellId;
         });
         textarea.addEventListener('input', () => this.updateCodeHighlight(textarea, highlight));
         textarea.addEventListener('scroll', () => {
@@ -3227,6 +4622,25 @@ class SingleCellAnalysis {
         }
     }
 
+    // Update cell execution number display
+    updateCellNumber(cellId, status) {
+        const cell = document.getElementById(cellId);
+        if (!cell) return;
+
+        const cellNumber = cell.querySelector('.cell-number');
+        if (!cellNumber) return;
+
+        const cellCounter = cell.dataset.cellCounter || '';
+
+        if (status === 'executing') {
+            cellNumber.textContent = 'In [*]:';
+        } else if (status === 'complete') {
+            cellNumber.textContent = `In [${cellCounter}]:`;
+        } else if (status === 'idle') {
+            cellNumber.textContent = 'In [ ]:';
+        }
+    }
+
     runCodeCell(cellId) {
         return this.runCodeCellPromise(cellId);
     }
@@ -3252,13 +4666,29 @@ class SingleCellAnalysis {
             return Promise.resolve();
         }
 
+        // Create AbortController for this execution
+        this.executionAbortController = new AbortController();
+
+        // Update cell number to executing state
+        this.updateCellNumber(cellId, 'executing');
+
         // Show loading
         outputDiv.className = 'code-cell-output has-content';
         outputDiv.textContent = this.t('status.executing');
 
-        // Execute code on backend
+        // Show interrupt button and start polling status
+        this.showInterruptButton();
+        this.startExecutionStatusPolling();
+
+        // Execute code on backend with streaming
         const kernelId = this.getActiveKernelId();
-        return fetch('/api/execute_code', {
+
+        // Variables to track output across promise chain
+        let accumulatedOutput = '';
+        let figures = [];
+
+        // Use streaming endpoint for real-time output
+        return fetch('/api/execute_code_stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -3266,42 +4696,320 @@ class SingleCellAnalysis {
             body: JSON.stringify({
                 code: code,
                 kernel_id: kernelId
+            }),
+            signal: this.executionAbortController.signal
+        })
+        .then(async response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            // Clear output div for streaming
+            outputDiv.className = 'code-cell-output has-content';
+            outputDiv.textContent = '';
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let hasError = false;
+
+            while (true) {
+                const {done, value} = await reader.read();
+
+                if (done) break;
+
+                // Decode chunk
+                buffer += decoder.decode(value, {stream: true});
+
+                // Process SSE messages
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // Keep incomplete line in buffer
+
+                for (const line of lines) {
+                    if (!line.trim() || line.startsWith(':')) continue;
+
+                    if (line.startsWith('data: ')) {
+                        const data = JSON.parse(line.substring(6));
+                        // Debug logging (uncomment for debugging)
+                        // console.log('SSE event:', data.type, data.text ? data.text.substring(0, 50) : '');
+
+                        if (data.type === 'output' || data.type === 'stderr') {
+                            // Append output in real-time
+                            accumulatedOutput += data.text;
+                            this.renderCodeOutput(outputDiv, {
+                                text: accumulatedOutput,
+                                isError: data.type === 'stderr',
+                                figures: figures
+                            });
+                        } else if (data.type === 'error') {
+                            accumulatedOutput += data.text;
+                            hasError = true;
+                            this.renderCodeOutput(outputDiv, {
+                                text: data.text,
+                                isError: true,
+                                figures: []
+                            });
+                        } else if (data.type === 'interrupted') {
+                            // Append interrupted message to accumulated output
+                            accumulatedOutput += '\n⚠️ ' + data.text;
+                            this.renderCodeOutput(outputDiv, {
+                                text: accumulatedOutput,
+                                isError: false,
+                                figures: figures
+                            });
+                        } else if (data.type === 'complete') {
+                            // Final result
+                            if (data.figures && data.figures.length > 0) {
+                                figures = data.figures;
+                            }
+
+                            if (data.error) {
+                                this.renderCodeOutput(outputDiv, {
+                                    text: data.error,
+                                    isError: true,
+                                    figures: figures
+                                });
+                            } else {
+                                let finalOutput = data.output || accumulatedOutput || '';
+
+                                // Add result if present (like Jupyter's auto-display of last expression)
+                                if (data.result !== null && data.result !== undefined) {
+                                    const resultStr = String(data.result);
+                                    if (resultStr && resultStr !== 'None') {
+                                        if (finalOutput) {
+                                            finalOutput += '\n' + resultStr;
+                                        } else {
+                                            finalOutput = resultStr;
+                                        }
+                                    }
+                                }
+
+                                // If still no output, show success message
+                                if (!finalOutput && figures.length === 0) {
+                                    finalOutput = this.t('status.noOutput');
+                                }
+
+                                this.renderCodeOutput(outputDiv, {
+                                    text: finalOutput,
+                                    isError: false,
+                                    figures: figures
+                                });
+                            }
+
+                            if (data.data_updated && data.data_info) {
+                                this.refreshDataFromKernel(data.data_info);
+                            }
+
+                            // Update cell number to complete state
+                            this.updateCellNumber(cellId, 'complete');
+                        }
+                    }
+                }
+            }
+
+            // Hide interrupt button and stop polling
+            this.hideInterruptButton();
+            this.stopExecutionStatusPolling();
+
+            // Update cell number to complete state if not already done
+            this.updateCellNumber(cellId, 'complete');
+
+            // Auto-refresh variable viewer and kernel stats after execution
+            this.refreshKernelInfo();
+        })
+        .catch(error => {
+            // Hide interrupt button and stop polling
+            this.hideInterruptButton();
+            this.stopExecutionStatusPolling();
+
+            if (error.name === 'AbortError') {
+                // Append cancel message to accumulated output instead of overwriting
+                if (accumulatedOutput) {
+                    accumulatedOutput += '\n⚠️ Request cancelled';
+                } else {
+                    accumulatedOutput = '⚠️ Request cancelled';
+                }
+                this.renderCodeOutput(outputDiv, {
+                    text: accumulatedOutput,
+                    isError: false,
+                    figures: figures
+                });
+            } else {
+                this.renderCodeOutput(outputDiv, {
+                    text: `${this.t('common.error')}: ${error.message}`,
+                    isError: true,
+                    figures: []
+                });
+            }
+
+            // Update cell number to complete state
+            this.updateCellNumber(cellId, 'complete');
+        });
+    }
+
+    interruptExecution() {
+        if (!this.isExecuting) {
+            return;
+        }
+
+        // Disable interrupt button to prevent double-clicks
+        const interruptBtn = document.getElementById('interrupt-btn');
+        if (interruptBtn) {
+            interruptBtn.disabled = true;
+            interruptBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Interrupting...';
+        }
+
+        // Send interrupt request to backend
+        fetch('/api/kernel/interrupt', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Interrupt failed:', data.error);
+                this.addToLog('Interrupt failed: ' + data.error, 'error');
+            } else {
+                this.addToLog('Execution interrupted');
+            }
+        })
+        .catch(error => {
+            console.error('Interrupt request failed:', error);
+            this.addToLog('Interrupt request failed', 'error');
+        })
+        .finally(() => {
+            // Abort the fetch request immediately for faster UI response
+            if (this.executionAbortController) {
+                this.executionAbortController.abort();
+            }
+        });
+    }
+
+    restartKernel() {
+        // Confirm restart
+        if (!confirm('Are you sure you want to restart the kernel? All variables will be lost.')) {
+            return;
+        }
+
+        const restartBtn = document.getElementById('restart-kernel-btn');
+        if (restartBtn) {
+            restartBtn.disabled = true;
+            restartBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        }
+
+        this.addToLog('Restarting kernel...');
+
+        const kernelId = this.getActiveKernelId();
+
+        fetch('/api/kernel/restart', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                kernel_id: kernelId
             })
         })
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                this.renderCodeOutput(outputDiv, {
-                    text: data.error,
-                    isError: true,
-                    figures: data.figures || []
-                });
+                console.error('Kernel restart failed:', data.error);
+                this.addToLog('Kernel restart failed: ' + data.error, 'error');
             } else {
-                let output = '';
-                if (data.output) output += data.output;
-                if (data.result !== null && data.result !== undefined) {
-                    if (output) output += '\n';
-                    output += `Out: ${data.result}`;
-                }
-                if (data.data_updated) {
-                    this.refreshDataFromKernel(data.data_info);
-                }
-                this.renderCodeOutput(outputDiv, {
-                    text: output || this.t('status.noOutput'),
-                    isError: false,
-                    figures: data.figures || []
+                this.addToLog('Kernel restarted successfully');
+
+                // Clear all cell execution numbers
+                this.codeCells.forEach(cellId => {
+                    this.updateCellNumber(cellId, 'idle');
                 });
+
+                // Refresh variable viewer and kernel stats
+                this.refreshKernelInfo();
             }
         })
         .catch(error => {
-            this.renderCodeOutput(outputDiv, {
-                text: `${this.t('common.error')}: ${error.message}`,
-                isError: true,
-                figures: []
-            });
+            console.error('Kernel restart request failed:', error);
+            this.addToLog('Kernel restart failed: ' + error.message, 'error');
+        })
+        .finally(() => {
+            if (restartBtn) {
+                restartBtn.disabled = false;
+                restartBtn.innerHTML = '<i class="fas fa-redo"></i>';
+            }
         });
     }
 
+    refreshKernelInfo() {
+        // Refresh both variable viewer and kernel stats
+        this.fetchKernelVars();
+        this.fetchKernelStats();
+    }
+
+    showInterruptButton() {
+        this.isExecuting = true;
+        const btn = document.getElementById('interrupt-btn');
+        if (btn) {
+            btn.style.display = 'inline-block';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-stop"></i> <span data-i18n="toolbar.interrupt">Interrupt</span>';
+        }
+    }
+
+    hideInterruptButton() {
+        this.isExecuting = false;
+        const btn = document.getElementById('interrupt-btn');
+        if (btn) {
+            btn.style.display = 'none';
+        }
+    }
+
+    startExecutionStatusPolling() {
+        // Poll execution status every 500ms to update UI
+        this.executionStatusPollInterval = setInterval(() => {
+            fetch('/api/kernel/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.is_executing) {
+                        // Execution finished, stop polling
+                        this.stopExecutionStatusPolling();
+                        this.hideInterruptButton();
+                    } else if (data.elapsed_seconds) {
+                        // Update elapsed time display
+                        const btn = document.getElementById('interrupt-btn');
+                        if (btn && data.elapsed_seconds > 5) {
+                            btn.title = `Running for ${Math.floor(data.elapsed_seconds)}s`;
+                        }
+                    }
+                })
+                .catch(err => {
+                    console.error('Status poll failed:', err);
+                });
+        }, 500);
+    }
+
+    stopExecutionStatusPolling() {
+        if (this.executionStatusPollInterval) {
+            clearInterval(this.executionStatusPollInterval);
+            this.executionStatusPollInterval = null;
+        }
+    }
+
+    // Run the currently focused cell (or first cell if none focused)
+    runCurrentCell() {
+        if (this.codeCells.length === 0) {
+            return;
+        }
+
+        // Run the last focused cell, or the first cell if no cell was focused
+        const cellToRun = this.lastFocusedCellId || this.codeCells[0];
+        if (cellToRun && document.getElementById(cellToRun)) {
+            this.runCodeCell(cellToRun);
+        }
+    }
+
+    // Run all cells sequentially
     runAllCells() {
         if (this.codeCells.length === 0) {
             return;
@@ -3803,6 +5511,18 @@ class SingleCellAnalysis {
                 layers: ${(detail.summary.layers || []).join(', ') || '—'}
             `;
             varView.appendChild(list);
+
+            // Add "Load to Visualization" button
+            const loadBtn = document.createElement('button');
+            loadBtn.className = 'btn btn-sm btn-primary mt-3';
+            loadBtn.innerHTML = `<i class="feather-eye"></i> ${this.t('var.loadToViz')}`;
+            loadBtn.onclick = () => {
+                console.log('=== Load to Visualization button CLICKED ===');
+                console.log('Variable name:', detail.name);
+                this.loadAnndataToVisualization(detail.name);
+            };
+            varView.appendChild(loadBtn);
+            console.log('Load to Visualization button created for:', detail.name);
             return;
         }
 
@@ -3810,6 +5530,109 @@ class SingleCellAnalysis {
         pre.className = 'code-output-text';
         pre.textContent = detail.content || '';
         varView.appendChild(pre);
+    }
+
+    loadAnndataToVisualization(varName) {
+        console.log('=== loadAnndataToVisualization CALLED ===');
+        console.log('varName:', varName);
+
+        if (!varName) {
+            console.error('No varName provided');
+            return;
+        }
+
+        const kernelId = this.getActiveKernelId();
+        console.log('kernelId:', kernelId);
+
+        if (!kernelId) {
+            console.error('No active kernel');
+            this.addToLog('No active kernel', 'error');
+            return;
+        }
+
+        // Show loading notification
+        this.addToLog('Loading AnnData to visualization...');
+        console.log('Sending request to /api/kernel/load_adata');
+
+        fetch('/api/kernel/load_adata', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                var_name: varName,
+                kernel_id: kernelId
+            })
+        })
+        .then(response => {
+            console.log('Response status:', response.status);
+            console.log('Response ok:', response.ok);
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                console.error('Load AnnData error:', data.error);
+                this.addToLog(`Failed to load: ${data.error}`, 'error');
+                return;
+            }
+
+            if (data.success && data.data_info) {
+                console.log('Successfully loaded AnnData:', data.data_info);
+
+                // Update UI with loaded data
+                this.addToLog(`Successfully loaded ${varName} to visualization`);
+
+                // Switch to visualization view FIRST
+                this.switchView('visualization');
+
+                // Ensure visualization controls are shown (like updateUI does)
+                const uploadSection = document.getElementById('upload-section');
+                const vizControls = document.getElementById('viz-controls');
+                const vizPanel = document.getElementById('viz-panel');
+
+                if (uploadSection) {
+                    uploadSection.style.display = 'none';
+                    console.log('Hid upload section');
+                }
+                if (vizControls) {
+                    vizControls.style.display = 'block';
+                    console.log('Showed viz controls');
+                }
+                if (vizPanel) {
+                    vizPanel.style.display = 'block';
+                    console.log('Showed viz panel');
+                }
+
+                // Refresh data info display
+                this.refreshDataFromKernel(data.data_info);
+
+                // Fetch gene list for autocomplete
+                if (this.fetchGeneList) {
+                    this.fetchGeneList();
+                }
+
+                // Manually trigger plot update after view switch
+                setTimeout(() => {
+                    const embeddingSelect = document.getElementById('embedding-select');
+                    if (embeddingSelect && embeddingSelect.value) {
+                        console.log('Triggering plot update with embedding:', embeddingSelect.value);
+                        this.updatePlot();
+                    } else if (data.data_info.embeddings && data.data_info.embeddings.length > 0) {
+                        // Auto-select first embedding if available
+                        embeddingSelect.value = data.data_info.embeddings[0];
+                        console.log('Auto-selected embedding:', data.data_info.embeddings[0]);
+                        this.updatePlot();
+                    }
+                }, 300);
+            } else {
+                console.error('Unexpected response:', data);
+                this.addToLog('Unexpected response from server', 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Load AnnData exception:', error);
+            this.addToLog(`Error: ${error.message}`, 'error');
+        });
     }
 
     toggleSection(sectionId) {
@@ -4544,13 +6367,20 @@ class SingleCellAnalysis {
         }
         if (type === 'markdown') {
             this.renderMarkdownCell(cellId);
+            if (textarea) this.resizeMarkdownEditor(textarea);
         } else {
             const markdownRender = document.getElementById(`${cellId}-markdown`);
             if (markdownRender) markdownRender.style.display = 'none';
-            if (textarea) textarea.style.display = 'block';
-        }
-        if (type === 'markdown' && textarea) {
-            this.resizeMarkdownEditor(textarea);
+            if (textarea) {
+                textarea.style.display = 'block';
+                // Recalculate height after textarea becomes visible again
+                textarea.style.height = 'auto';
+                setTimeout(() => {
+                    textarea.style.height = Math.max(60, textarea.scrollHeight) + 'px';
+                    const highlightContainer = cell.querySelector('.code-highlight');
+                    if (highlightContainer) highlightContainer.style.height = textarea.style.height;
+                }, 0);
+            }
         }
     }
 
@@ -4845,6 +6675,367 @@ print(f"HVG count: {adata.var.highly_variable.sum()}")`,
         });
         
         console.log('Legend已添加到图表右上角');
+    }
+
+    // ── Python Environment Manager ─────────────────────────────────────────
+
+    _envDefaultChannels = [
+        { name: 'conda-forge', checked: true },
+        { name: 'bioconda',    checked: true },
+        { name: 'defaults',    checked: false },
+        { name: 'pytorch',     checked: false },
+        { name: 'nvidia',      checked: false },
+    ];
+
+    showEnvManager() {
+        const modal = document.getElementById('env-manager-modal');
+        if (!modal) return;
+        modal.style.display = '';
+        this._envInitChannels();
+        this._envUpdatePipPreview();
+        this._envUpdateCondaPreview();
+        this.applyLanguage(this.currentLang);
+    }
+
+    hideEnvManager() {
+        const modal = document.getElementById('env-manager-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    switchEnvTab(tab) {
+        document.getElementById('env-panel-pip').style.display   = tab === 'pip'   ? '' : 'none';
+        document.getElementById('env-panel-conda').style.display = tab === 'conda' ? '' : 'none';
+        document.getElementById('env-tab-pip').classList.toggle('active',   tab === 'pip');
+        document.getElementById('env-tab-conda').classList.toggle('active', tab === 'conda');
+    }
+
+    _envInitChannels() {
+        const list = document.getElementById('env-channel-list');
+        if (!list || list.dataset.initialized) return;
+        list.dataset.initialized = '1';
+        this._envDefaultChannels.forEach(ch => {
+            const id = `ch-${ch.name}`;
+            const wrap = document.createElement('div');
+            wrap.className = 'form-check form-check-inline';
+            wrap.innerHTML = `<input class="form-check-input" type="checkbox" id="${id}"
+                                     value="${ch.name}" ${ch.checked ? 'checked' : ''}
+                                     onchange="singleCellApp._envUpdateCondaPreview()">
+                              <label class="form-check-label small" for="${id}">${ch.name}</label>`;
+            list.appendChild(wrap);
+        });
+    }
+
+    envAddChannel() {
+        const inp = document.getElementById('env-custom-channel');
+        const name = inp ? inp.value.trim() : '';
+        if (!name) return;
+        const list = document.getElementById('env-channel-list');
+        const id = `ch-${name}`;
+        if (document.getElementById(id)) { inp.value = ''; return; }
+        const wrap = document.createElement('div');
+        wrap.className = 'form-check form-check-inline';
+        wrap.innerHTML = `<input class="form-check-input" type="checkbox" id="${id}"
+                                 value="${name}" checked
+                                 onchange="singleCellApp._envUpdateCondaPreview()">
+                          <label class="form-check-label small" for="${id}">${name}</label>`;
+        list.appendChild(wrap);
+        inp.value = '';
+        this._envUpdateCondaPreview();
+    }
+
+    _envGetPkg() {
+        return (document.getElementById('env-pkg-input') || {}).value?.trim() || '<package>';
+    }
+
+    _envGetChannels() {
+        return [...document.querySelectorAll('#env-channel-list input:checked')].map(i => i.value);
+    }
+
+    _envUpdatePipPreview() {
+        const pkg    = this._envGetPkg();
+        const mirror = (document.getElementById('env-mirror-select') || {}).value || '';
+        const extra  = (document.getElementById('env-pip-extra') || {}).value?.trim() || '';
+        let cmd = `uv pip install ${pkg}`;
+        if (mirror) cmd += ` --index-url ${mirror}`;
+        if (extra)  cmd += ` ${extra}`;
+        const el = document.getElementById('env-pip-preview');
+        if (el) el.textContent = cmd;
+    }
+
+    _envUpdateCondaPreview() {
+        const pkg      = this._envGetPkg();
+        const channels = this._envGetChannels();
+        const extra    = (document.getElementById('env-conda-extra') || {}).value?.trim() || '';
+        const chStr    = channels.map(c => `-c ${c}`).join(' ');
+        let cmd = `mamba install -y ${chStr} ${pkg}`;
+        if (extra) cmd += ` ${extra}`;
+        const el = document.getElementById('env-conda-preview');
+        if (el) el.textContent = cmd;
+    }
+
+    _envLog(text, type = 'output') {
+        const con = document.getElementById('env-console');
+        if (!con) return;
+        const color = type === 'error' ? '#f38ba8' : type === 'cmd' ? '#89b4fa' : type === 'ok' ? '#a6e3a1' : '#cdd6f4';
+        con.innerHTML += `<span style="color:${color}">${this._escHtml(text)}</span>`;
+        con.scrollTop = con.scrollHeight;
+    }
+
+    _escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    async envSearch() {
+        const pkg = this._envGetPkg();
+        if (pkg === '<package>' || !pkg) return;
+        const infoEl    = document.getElementById('env-pkg-info');
+        const notFound  = document.getElementById('env-pkg-notfound');
+        infoEl.style.display = 'none';
+        notFound.style.display = 'none';
+        this._envUpdatePipPreview();
+        this._envUpdateCondaPreview();
+        try {
+            const r = await fetch(`/api/env/search_pypi?package=${encodeURIComponent(pkg)}`);
+            const d = await r.json();
+            if (d.found) {
+                document.getElementById('env-pkg-name').textContent    = d.name;
+                document.getElementById('env-pkg-version').textContent = d.version || '';
+                document.getElementById('env-pkg-pyver').textContent   = d.requires_python ? `Python ${d.requires_python}` : '';
+                document.getElementById('env-pkg-summary').textContent = d.summary || '';
+                document.getElementById('env-pkg-found-badge').innerHTML =
+                    `<span class="badge text-bg-success">${this.t('env.foundOnPypi')}</span>`;
+                infoEl.style.display = '';
+            } else {
+                notFound.style.display = '';
+            }
+        } catch (e) {
+            this._envLog('Search error: ' + e.message, 'error');
+        }
+    }
+
+    async envTestMirrors() {
+        const sel = document.getElementById('env-mirror-select');
+        this._envLog(this.t('env.testingMirrors') + '\n', 'cmd');
+        try {
+            const r = await fetch('/api/env/test_mirrors');
+            const d = await r.json();
+            sel.innerHTML = '';
+            (d.mirrors || []).forEach((m, i) => {
+                const opt = document.createElement('option');
+                opt.value = m.url;
+                const tag = m.ok ? `${m.latency_ms}ms` : 'timeout';
+                opt.textContent = `${m.name} — ${tag}`;
+                if (i === 0 && m.ok) opt.selected = true;
+                sel.appendChild(opt);
+                this._envLog(`  ${m.name}: ${tag}\n`, m.ok ? 'output' : 'error');
+            });
+            this._envUpdatePipPreview();
+        } catch (e) {
+            this._envLog('Mirror test error: ' + e.message, 'error');
+        }
+    }
+
+    envInstallPip() {
+        const pkg   = this._envGetPkg();
+        const mirror = (document.getElementById('env-mirror-select') || {}).value || '';
+        const extra  = (document.getElementById('env-pip-extra') || {}).value?.trim() || '';
+        if (!pkg || pkg === '<package>') { alert(this.t('env.enterPkg')); return; }
+
+        const con = document.getElementById('env-console');
+        if (con) con.textContent = '';
+        const es = new EventSource(`/api/env/install_pip?_dummy=${Date.now()}`);
+        // Use POST via fetch + ReadableStream instead
+        es.close();
+        this._envStreamInstall('/api/env/install_pip', { package: pkg, mirror, extra_args: extra });
+    }
+
+    envInstallConda() {
+        const pkg      = this._envGetPkg();
+        const channels = this._envGetChannels();
+        const extra    = (document.getElementById('env-conda-extra') || {}).value?.trim() || '';
+        if (!pkg || pkg === '<package>') { alert(this.t('env.enterPkg')); return; }
+
+        const con = document.getElementById('env-console');
+        if (con) con.textContent = '';
+        this._envStreamInstall('/api/env/install_conda', { package: pkg, channels, extra_args: extra });
+    }
+
+    async _envStreamInstall(url, body) {
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    try {
+                        const evt = JSON.parse(line.slice(6));
+                        if (evt.type === 'cmd')      this._envLog('$ ' + evt.text + '\n', 'cmd');
+                        else if (evt.type === 'output') this._envLog(evt.text);
+                        else if (evt.type === 'error')  this._envLog(evt.text + '\n', 'error');
+                        else if (evt.type === 'complete') {
+                            const msg = evt.success
+                                ? this.t('env.installSuccess')
+                                : `${this.t('env.installFailed')} (code ${evt.returncode})`;
+                            this._envLog('\n' + msg + '\n', evt.success ? 'ok' : 'error');
+                        }
+                    } catch {}
+                }
+            }
+        } catch (e) {
+            this._envLog('Stream error: ' + e.message + '\n', 'error');
+        }
+    }
+
+    // ── Python Environment Info ────────────────────────────────────────────
+
+    _envAllPkgsData = [];   // cache for filter
+
+    showEnvInfo() {
+        const modal = document.getElementById('env-info-modal');
+        if (!modal) return;
+        modal.style.display = '';
+        this.applyLanguage(this.currentLang);
+        this.loadEnvInfo();
+    }
+
+    hideEnvInfo() {
+        const modal = document.getElementById('env-info-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    async loadEnvInfo() {
+        const loading = document.getElementById('env-info-loading');
+        const content = document.getElementById('env-info-content');
+        const errEl   = document.getElementById('env-info-error');
+        loading.style.display = '';
+        content.style.display = 'none';
+        errEl.style.display   = 'none';
+
+        try {
+            const r = await fetch('/api/env/info');
+            const d = await r.json();
+
+            this._renderEnvSystem(d.system || {});
+            this._renderEnvPython(d.python || {});
+            this._renderEnvGpu(d.gpu || {});
+            this._renderEnvKeyPkgs(d.key_pkgs || []);
+            this._renderEnvAllPkgs(d.all_pkgs || []);
+
+            loading.style.display = 'none';
+            content.style.display = '';
+        } catch (e) {
+            loading.style.display = 'none';
+            errEl.textContent = 'Failed to load environment info: ' + e.message;
+            errEl.style.display = '';
+        }
+    }
+
+    _kv(label, value) {
+        if (value === null || value === undefined || value === '') return '';
+        return `<div class="d-flex gap-2 mb-1">
+            <span class="text-muted small" style="min-width:90px;flex-shrink:0">${this._escHtml(label)}</span>
+            <span class="small fw-medium" style="word-break:break-all">${this._escHtml(String(value))}</span>
+        </div>`;
+    }
+
+    _renderEnvSystem(s) {
+        const el = document.getElementById('env-info-system');
+        if (!el) return;
+        el.innerHTML =
+            this._kv('OS', `${s.os} ${s.machine}`) +
+            this._kv('Version', s.os_ver) +
+            this._kv('Host', s.hostname) +
+            (s.cpu_count   ? this._kv('CPU cores', s.cpu_count) : '') +
+            (s.ram_total_gb ? this._kv('RAM', `${s.ram_used_gb} / ${s.ram_total_gb} GB`) : '');
+    }
+
+    _renderEnvPython(p) {
+        const el = document.getElementById('env-info-python');
+        if (!el) return;
+        const ver = p.version ? p.version.split(' ')[0] : '';
+        el.innerHTML =
+            this._kv('Python', ver) +
+            this._kv('Executable', p.executable) +
+            this._kv('Prefix', p.prefix) +
+            (p.uv     ? this._kv('uv',     p.uv)     : '') +
+            (p.mamba  ? this._kv('mamba',  p.mamba)  : '') +
+            (p.conda  ? this._kv('conda',  p.conda)  : '') +
+            (p.pip    ? this._kv('pip',    p.pip)     : '');
+    }
+
+    _renderEnvGpu(g) {
+        const el = document.getElementById('env-info-gpu');
+        if (!el) return;
+        let html = g.torch_version ? this._kv('PyTorch', g.torch_version) : '';
+        if (g.cuda_available) {
+            html += this._kv('CUDA', g.cuda_version);
+            (g.devices || []).forEach(dev => {
+                html += this._kv(`GPU ${dev.index}`, `${dev.name}${dev.mem_gb ? ' — ' + dev.mem_gb + ' GB' : ''}`);
+            });
+        } else if (g.mps_available) {
+            html += `<span class="badge text-bg-success">Apple MPS</span>`;
+        } else {
+            html += `<span class="text-muted small">${this.t('envInfo.noGpu')}</span>`;
+        }
+        el.innerHTML = html || `<span class="text-muted small">${this.t('envInfo.noGpu')}</span>`;
+    }
+
+    _renderEnvKeyPkgs(pkgs) {
+        const tbody = document.getElementById('env-info-pkgs');
+        if (!tbody) return;
+        tbody.innerHTML = pkgs.map(p => {
+            const badge = p.installed
+                ? `<span class="badge text-bg-success">✓ ${this._escHtml(p.version)}</span>`
+                : `<span class="badge text-bg-secondary">${this.t('envInfo.notInstalled')}</span>`;
+            return `<tr>
+                <td class="ps-3 fw-medium">${this._escHtml(p.name)}</td>
+                <td>${p.installed ? this._escHtml(p.version) : '—'}</td>
+                <td>${badge}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    _renderEnvAllPkgs(pkgs) {
+        this._envAllPkgsData = pkgs;
+        const count = document.getElementById('env-info-pkg-count');
+        if (count) count.textContent = pkgs.length;
+        this._renderEnvAllPkgsTable(pkgs);
+    }
+
+    _renderEnvAllPkgsTable(pkgs) {
+        const tbody = document.getElementById('env-allpkgs-table');
+        if (!tbody) return;
+        tbody.innerHTML = pkgs.map(p =>
+            `<tr><td class="ps-3">${this._escHtml(p.name)}</td><td class="text-muted">${this._escHtml(p.version)}</td></tr>`
+        ).join('');
+    }
+
+    filterEnvPkgs(query) {
+        const q = query.toLowerCase();
+        const filtered = q
+            ? this._envAllPkgsData.filter(p => p.name.toLowerCase().includes(q))
+            : this._envAllPkgsData;
+        this._renderEnvAllPkgsTable(filtered);
+    }
+
+    toggleEnvAllPkgs() {
+        const body = document.getElementById('env-allpkgs-body');
+        const icon = document.getElementById('env-allpkgs-icon');
+        if (!body) return;
+        const collapsed = body.style.display === 'none';
+        body.style.display = collapsed ? '' : 'none';
+        if (icon) icon.className = collapsed ? 'feather-chevron-up' : 'feather-chevron-down';
     }
 }
 

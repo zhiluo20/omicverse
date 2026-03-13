@@ -1,15 +1,25 @@
-import scanpy as sc
 import numpy as np
 import pandas as pd
-from ..utils.registry import register_function
+from .._registry import register_function
+
+test_color=[
+    "#264653", "#2A9D8F", "#8AB17D", "#B5E48C", "#1D3557", "#457B9D",
+  "#6D597A", "#B56576", "#E56B6F", "#6930C3", "#A06CD5", "#DEC9E9",
+  "#588157", "#3D5A80", "#98C1D9", "#2F3E46", "#52796F", "#84A59D",
+  "#E76F51", "#F4A261", "#E9C46A", "#FFD166", "#BC6C25", "#DDA15E",
+  "#00F5D4", "#00BBF9", "#9B5DE5", "#F15BB5", "#FEE440", "#3A0CA3",
+  "#003049", "#D62828", "#F77F00", "#7209B7", "#4361EE", "#4CC9F0"
+]
 
 sc_color=[
- '#1F577B', '#A56BA7', '#E0A7C8', '#E069A6', '#941456', 
+ '#1F577B', '#A56BA7', '#E0A7C8', '#7CBB5F','#368650',
+ '#01A0A7', '#75C8CC','#E069A6', '#941456', 
  '#FCBC10', '#EF7B77', '#279AD7','#F0EEF0',
- '#EAEFC5', '#7CBB5F','#368650','#A499CC','#5E4D9A',
+ '#EAEFC5', '#A499CC','#5E4D9A',
  '#78C2ED','#866017', '#9F987F','#E0DFED',
- '#01A0A7', '#75C8CC', '#F0D7BC', '#D5B26C', '#D5DA48',
+  '#F0D7BC', '#D5B26C', '#D5DA48',
  '#B6B812', '#9DC3C3', '#A89C92', '#FEE00C', '#FEF2A1']
+
 
 red_color=['#F0C3C3','#E07370','#CB3E35','#A22E2A','#5A1713',
            '#D3396D','#8B0000', '#A52A2A', '#CD5C5C', '#DC143C' ]
@@ -132,9 +142,9 @@ def optim_palette(adata,basis,colors,palette=None,**kwargs):
 
     if (adata.uns[f'{colors}_colors'] is None) and (palette is None):
         if len(adata.obs[colors].cat.categories)>28:
-            palette_t=sc.pl.palettes.default_102[:len(list(set(adata.obs[colors].tolist())))]
+            palette_t=palette_112[:len(list(set(adata.obs[colors].tolist())))]
         else:
-            palette_t=sc.pl.palettes.zeileis_28[:len(list(set(adata.obs[colors].tolist())))]
+            palette_t=palette_28[:len(list(set(adata.obs[colors].tolist())))]
         #palette_t=ditto_color[:len(list(set(adata.obs[colors].tolist())))]
     elif palette!= None:
         palette_t=palette[:len(list(set(adata.obs[colors].tolist())))]
@@ -2134,6 +2144,17 @@ Forbiddencity = get_forbidden()
     related=["pl.embedding", "pl.volcano", "pl.boxplot"]
 )
 class ForbiddenCity:
+    """Forbidden City traditional-color palette utility.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    None
+        Initializes internal color lookup tables and grouped palettes.
+    """
 
     green1=Forbidden_Cmap(range(1,19))
     green2=Forbidden_Cmap(range(19,41))
@@ -2209,3 +2230,20 @@ class ForbiddenCity:
             html += '</tr>'
         html += '</table>'
         return html
+
+
+def palplot(colors, size=1):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    n = len(colors)
+    fig, ax = plt.subplots(figsize=(n * size, size))
+    
+    # 构造一个 1×N 的矩阵
+    data = np.arange(n).reshape(1, -1)
+    
+    ax.imshow(data, cmap=plt.matplotlib.colors.ListedColormap(colors),
+              aspect='auto')
+    
+    ax.set_xticks([])
+    ax.set_yticks([])
+    return fig,ax

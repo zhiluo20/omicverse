@@ -13,8 +13,7 @@ class SCENIC:
             n_jobs=8):
         
         from .._settings import Colors, EMOJI, print_gpu_usage_color
-        
-        from ctxcore.rnkdb import FeatherRankingDatabase as RankingDatabase
+        from ..external.ctxcore.rnkdb import FeatherRankingDatabase as RankingDatabase
         self.adata = adata
         self.db_glob = db_glob
         self.motif_path = motif_path
@@ -99,7 +98,8 @@ class SCENIC:
 
         You can access the model through `RegDiffusionTrainer.model`. 
         
-        Arguments:
+        Parameters
+        ----------
             exp_array (np.ndarray): 2D numpy array. If used on single-cell RNAseq, 
                 the rows are cells and the columns are genes. Data should be log 
                 transformed. You may also want to remove all non expressed genes.
@@ -129,6 +129,10 @@ class SCENIC:
                 neural networks. Default: 0.1.
             weight_decay_adj (float): L2 regularization coef on the adj matrix.
                 Default: 0.01.
+
+        Returns
+        -------
+        None
             sparse_loss_coef (float): L1 regularization coef on the adj matrix. 
                 Default: 0.25.
             adj_dropout (float): Probability of an edge to be zeroed. Default: 0.3.
@@ -1137,4 +1141,3 @@ def plot_grn(G, pos, tf_list,temporal_df, tf_gene_dict,
     ax.set_title(title,fontsize=fontsize+1)
     ax.axis('off')
     return ax
-

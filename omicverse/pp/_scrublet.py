@@ -21,6 +21,7 @@ from ..external.scrublet.helper_functions import (
     pipeline_truncated_svd,
 )
 from .._settings import EMOJI, Colors, settings
+from .._registry import register_function
 from datetime import datetime
 
 # Import utility functions from pp module
@@ -56,6 +57,25 @@ if TYPE_CHECKING:
     "copy",
     "random_state",
 )
+@register_function(
+    aliases=["双细胞检测", "scrublet", "doublet_detection", "doublet", "细胞双ts识别"],
+    category="preprocessing",
+    description="Detect putative doublets by comparing observed cells with simulated doublets",
+    prerequisites={
+        "optional_functions": ["filter_cells", "filter_genes", "normalize_total", "log1p"],
+    },
+    requires={},
+    produces={
+        "obs": ["doublet_score", "predicted_doublet"],
+        "uns": ["scrublet"],
+    },
+    auto_fix="none",
+    examples=[
+        "ov.pp.scrublet(adata, expected_doublet_rate=0.05)",
+        "adata = ov.pp.scrublet(adata, copy=True, use_gpu=True)",
+    ],
+    related=["scrublet_simulate_doublets", "filter_cells", "filter_genes"],
+)
 def scrublet(
     adata: AnnData,
     adata_sim: AnnData | None = None,
@@ -79,36 +99,57 @@ def scrublet(
     random_state: _LegacyRandom = 0,
     use_gpu: bool = False,
 ) -> AnnData | None:
-    r"""Predict doublets using Scrublet with optional GPU acceleration.
+    r"""Predict cell doublets using Scrublet with optional GPU acceleration.
 
-    Predict cell doublets using a nearest-neighbor classifier of observed
-    transcriptomes and simulated doublets. This implementation includes
-    GPU acceleration options for improved performance on large datasets.
+    Parameters
+    ----------
+    adata : AnnData
+        Observed count matrix (cells x genes) for doublet calling.
+    adata_sim : AnnData, optional
+        Optional pre-simulated doublet AnnData. If ``None``, synthetic doublets
+        are generated from ``adata``.
+    batch_key : str, optional
+        Batch column in ``adata.obs`` for per-batch doublet calling.
+    sim_doublet_ratio : float, default=2.0
+        Number of synthetic doublets relative to observed cells.
+    expected_doublet_rate : float, default=0.05
+        Prior expected doublet fraction for the experiment.
+    stdev_doublet_rate : float, default=0.02
+        Standard deviation around the expected doublet rate prior.
+    synthetic_doublet_umi_subsampling : float, default=1.0
+        UMI subsampling fraction used during synthetic doublet simulation.
+    knn_dist_metric : str or callable, default="euclidean"
+        Distance metric used for nearest-neighbor graph construction.
+    normalize_variance : bool, default=True
+        Whether to variance-normalize features before PCA.
+    log_transform : bool, default=False
+        Whether to log-transform values before PCA.
+    mean_center : bool, default=True
+        Whether to center features before dimensionality reduction.
+    n_prin_comps : int, default=30
+        Number of principal components used for neighbor graph building.
+    use_approx_neighbors : bool, optional
+        Whether to use approximate nearest neighbors.
+    get_doublet_neighbor_parents : bool, default=False
+        Whether to store parent cell identities of doublet neighbors.
+    n_neighbors : int, optional
+        Number of neighbors for the classifier graph.
+    threshold : float, optional
+        Manual threshold for calling predicted doublets.
+    verbose : bool, default=True
+        Whether to print progress logs.
+    copy : bool, default=False
+        Return a copied AnnData instead of modifying in place.
+    random_state : int or RandomState, default=0
+        Random seed/state for reproducibility.
+    use_gpu : bool, default=False
+        Whether to use GPU-accelerated PCA path when available.
 
-    Arguments:
-        adata: Annotated data matrix of shape n_obs × n_vars
-        adata_sim (AnnData): Pre-simulated doublets (default: None)
-        batch_key (str): Column name for batch information (default: None)
-        sim_doublet_ratio (float): Number of doublets to simulate relative to observed cells (default: 2.0)
-        expected_doublet_rate (float): Estimated doublet rate for the experiment (default: 0.05)
-        stdev_doublet_rate (float): Uncertainty in expected doublet rate (default: 0.02)
-        synthetic_doublet_umi_subsampling (float): UMI sampling rate for synthetic doublets (default: 1.0)
-        knn_dist_metric (str): Distance metric for nearest neighbors (default: 'euclidean')
-        normalize_variance (bool): Whether to normalize gene variance (default: True)
-        log_transform (bool): Whether to log-transform data prior to PCA (default: False)
-        mean_center (bool): Whether to center data for PCA (default: True)
-        n_prin_comps (int): Number of principal components for embedding (default: 30)
-        use_approx_neighbors (bool): Use approximate nearest neighbor search (default: None)
-        get_doublet_neighbor_parents (bool): Return parent transcriptomes for doublet neighbors (default: False)
-        n_neighbors (int): Number of neighbors for KNN graph (default: None)
-        threshold (float): Doublet score threshold for classification (default: None)
-        verbose (bool): Whether to log progress updates (default: True)
-        copy (bool): Return copy instead of modifying in place (default: False)
-        random_state (int): Random seed for reproducibility (default: 0)
-        use_gpu (bool): Whether to use GPU acceleration (default: False)
-
-    Returns:
-        adata with doublet predictions added if copy=False, otherwise returns modified copy
+    Returns
+    -------
+    AnnData or None
+        Returns modified AnnData when ``copy=True``; otherwise updates in place
+        and returns ``None``.
     """
     #if threshold is None and not find_spec("skimage"):  # pragma: no cover
         # Scrublet.call_doublets requires `skimage` with `threshold=None` but PCA
@@ -478,6 +519,25 @@ def _scrublet_call_doublets(
 @old_positionals(
     "layer", "sim_doublet_ratio", "synthetic_doublet_umi_subsampling", "random_seed"
 )
+@register_function(
+    aliases=["模拟双细胞", "scrublet_simulate_doublets", "simulate_doublets", "双细胞模拟", "synthetic_doublets"],
+    category="preprocessing",
+    description="Simulate synthetic doublets from random observed-cell pairs",
+    prerequisites={
+        "optional_functions": ["scrublet"]
+    },
+    requires={},
+    produces={
+        "obs": ["n_counts"],
+        "obsm": ["doublet_parents"],
+        "uns": ["scrublet"],
+    },
+    auto_fix="none",
+    examples=[
+        "adata_sim = ov.pp.scrublet_simulate_doublets(adata, sim_doublet_ratio=2.0)",
+    ],
+    related=["scrublet"],
+)
 def scrublet_simulate_doublets(
     adata: AnnData,
     *,
@@ -486,21 +546,25 @@ def scrublet_simulate_doublets(
     synthetic_doublet_umi_subsampling: float = 1.0,
     random_seed: _LegacyRandom = 0,
 ) -> AnnData:
-    r"""Simulate doublets by adding counts of random observed transcriptome pairs.
+    r"""Simulate synthetic doublets from random cell pairs.
 
-    Generate synthetic doublets by randomly selecting pairs of observed cells
-    and combining their transcriptomes to create artificial doublet profiles
-    for training the doublet detection classifier.
+    Parameters
+    ----------
+    adata : AnnData
+        Input AnnData with observed cell transcriptomes.
+    layer : str, optional
+        Layer key to use as input matrix. Uses ``adata.X`` when ``None``.
+    sim_doublet_ratio : float, default=2.0
+        Number of simulated doublets relative to observed cells.
+    synthetic_doublet_umi_subsampling : float, default=1.0
+        UMI subsampling fraction used when creating synthetic doublets.
+    random_seed : int or RandomState, default=0
+        Random state controlling pair sampling reproducibility.
 
-    Arguments:
-        adata: Annotated data matrix of shape n_obs × n_vars
-        layer (str): Layer containing raw values, or None to use .X (default: None)
-        sim_doublet_ratio (float): Number of doublets to simulate relative to observed cells (default: 2.0)
-        synthetic_doublet_umi_subsampling (float): UMI sampling rate for doublet creation (default: 1.0)
-        random_seed (int): Random seed for reproducible doublet simulation (default: 0)
-
-    Returns:
-        adata: AnnData object containing simulated doublets with metadata
+    Returns
+    -------
+    AnnData
+        Synthetic-doublet AnnData containing simulated matrix and metadata.
     """
     X = _get_obs_rep(adata, layer=layer)
     scrub = Scrublet(X, random_state=random_seed)
@@ -528,18 +592,10 @@ def pca_torch(
         msg = "_E_sim_norm is not set"
         raise RuntimeError(msg)
 
-    # Convert to array if sparse, otherwise use as is
-    if sparse.issparse(self._E_obs_norm):
-        X_obs = self._E_obs_norm.toarray()
-    else:
-        X_obs = np.asarray(self._E_obs_norm)
-
-    if sparse.issparse(self._E_sim_norm):
-        X_sim = self._E_sim_norm.toarray()
-    else:
-        X_sim = np.asarray(self._E_sim_norm)
-
     if use_gpu:
+        # For GPU mode, keep sparse matrices as-is since torch_pca supports them
+        X_obs = self._E_obs_norm
+        X_sim = self._E_sim_norm
         if svd_solver == "auto":
             svd_solver = "gesvd"
         
@@ -577,24 +633,83 @@ def pca_torch(
                 ).fit(X_obs)
                 self.set_manifold(pca.transform(X_obs), pca.transform(X_sim))
         else:
-            # Use TorchDR for non-MPS GPU devices (CUDA, etc.)
-            print(f"   {Colors.GREEN}{EMOJI['gpu']} Using TorchDR PCA for {device.type.upper()} GPU acceleration in scrublet{Colors.ENDC}")
-            print(f"   {Colors.GREEN}{EMOJI['gpu']} TorchDR PCA backend: {device.type.upper()} GPU acceleration (scrublet){Colors.ENDC}")
-            
+            # Use torch_pca for non-MPS GPU devices (CUDA, etc.)
+            print(f"   {Colors.GREEN}{EMOJI['gpu']} Using torch_pca PCA for {device.type.upper()} GPU acceleration in scrublet{Colors.ENDC}")
+            print(f"   {Colors.GREEN}{EMOJI['gpu']} torch_pca PCA backend: {device.type.upper()} GPU acceleration (scrublet, supports sparse){Colors.ENDC}")
+
             try:
-                from torchdr import PCA
+                from ..external.torch_pca import PCA
             except ImportError:
-                raise ImportError("torchdr is not installed. Please install it using `pip install torchdr`.")
-            
+                raise ImportError("torch_pca is not available. Please check the installation.")
+
             # Prepare data for GPU compatibility (float32 requirement)
             X_obs = prepare_data_for_device(X_obs, device, verbose=True)
+            X_sim = prepare_data_for_device(X_sim, device, verbose=True)
 
-            pca = PCA(
-                n_components=n_prin_comps, random_state=None, svd_driver=svd_solver,
-                device=device,
-            ).fit(X_obs)
-            self.set_manifold(pca.transform(X_obs), pca.transform(X_sim))
+            # Print input data type information
+            print(f"   {Colors.CYAN}📊 Scrublet PCA input data type - X_obs: {type(X_obs).__name__}, shape: {X_obs.shape}, dtype: {X_obs.dtype}{Colors.ENDC}")
+            print(f"   {Colors.CYAN}📊 Scrublet PCA input data type - X_sim: {type(X_sim).__name__}, shape: {X_sim.shape}, dtype: {X_sim.dtype}{Colors.ENDC}")
+            if sparse.issparse(X_obs):
+                print(f"   {Colors.CYAN}📊 X_obs sparse density: {X_obs.nnz / (X_obs.shape[0] * X_obs.shape[1]) * 100:.2f}%{Colors.ENDC}")
+            if sparse.issparse(X_sim):
+                print(f"   {Colors.CYAN}📊 X_sim sparse density: {X_sim.nnz / (X_sim.shape[0] * X_sim.shape[1]) * 100:.2f}%{Colors.ENDC}")
+
+            # Map svd_solver to torch_pca compatible values
+            if svd_solver == "auto":
+                svd_solver_mapped = "auto"
+            elif svd_solver in ["gesvd", "gesvdj", "gesvda"]:
+                svd_solver_mapped = "full"
+            else:
+                svd_solver_mapped = "auto"
+
+            # torch_pca supports sparse matrices natively - no need to convert to dense!
+            if sparse.issparse(X_obs):
+                # For sparse matrices, use ARPACK solver
+                pca = PCA(n_components=n_prin_comps, svd_solver='arpack', random_state=random_state)
+                pca.fit(X_obs)
+                X_obs_transformed = pca.transform(X_obs)
+                X_sim_transformed = pca.transform(X_sim)
+
+                # Convert to numpy if tensor
+                if hasattr(X_obs_transformed, 'cpu'):
+                    X_obs_transformed = X_obs_transformed.cpu().numpy()
+                if hasattr(X_sim_transformed, 'cpu'):
+                    X_sim_transformed = X_sim_transformed.cpu().numpy()
+            else:
+                # For dense arrays, convert to torch tensor and move to GPU
+                X_obs_torch = torch.from_numpy(np.asarray(X_obs)).to(device)
+                X_sim_torch = torch.from_numpy(np.asarray(X_sim)).to(device)
+
+                pca = PCA(n_components=n_prin_comps, svd_solver=svd_solver_mapped, random_state=random_state)
+                pca.fit(X_obs_torch)
+                # Move PCA model to GPU
+                pca.to(device)
+                X_obs_transformed = pca.transform(X_obs_torch)
+                X_sim_transformed = pca.transform(X_sim_torch)
+
+                # Convert torch tensors back to numpy arrays
+                if hasattr(X_obs_transformed, 'cpu'):
+                    X_obs_transformed = X_obs_transformed.cpu().numpy()
+                if hasattr(X_sim_transformed, 'cpu'):
+                    X_sim_transformed = X_sim_transformed.cpu().numpy()
+
+            self.set_manifold(X_obs_transformed, X_sim_transformed)
     else:
+        # For CPU mode, convert sparse matrices to dense for sklearn PCA
+        if sparse.issparse(self._E_obs_norm):
+            X_obs = self._E_obs_norm.toarray()
+        else:
+            X_obs = np.asarray(self._E_obs_norm)
+
+        if sparse.issparse(self._E_sim_norm):
+            X_sim = self._E_sim_norm.toarray()
+        else:
+            X_sim = np.asarray(self._E_sim_norm)
+
+        # Print input data type information for CPU mode
+        print(f"   {Colors.CYAN}📊 Scrublet PCA input data type (CPU) - X_obs: {type(X_obs).__name__}, shape: {X_obs.shape}, dtype: {X_obs.dtype}{Colors.ENDC}")
+        print(f"   {Colors.CYAN}📊 Scrublet PCA input data type (CPU) - X_sim: {type(X_sim).__name__}, shape: {X_sim.shape}, dtype: {X_sim.dtype}{Colors.ENDC}")
+
         from sklearn.decomposition import PCA
         if svd_solver == "auto":
             svd_solver = "arpack"
@@ -602,4 +717,3 @@ def pca_torch(
             n_components=n_prin_comps, random_state=random_state, svd_solver=svd_solver,
         ).fit(X_obs)
         self.set_manifold(pca.transform(X_obs), pca.transform(X_sim))
-
