@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -31,6 +32,7 @@ import requests
 
 from ..agent_bridge import AgentBridge
 from ..channel_language import response_language_instruction, tr
+from ..channel_shared import render_help_text, render_start_text
 from ..gateway.routing import GatewaySessionRegistry, SessionKey
 from ..model_help import render_model_help
 
@@ -77,6 +79,19 @@ class FeishuClient:
 
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self._tenant_access_token()}"}
+
+    def get_bot_info(self) -> Dict[str, Any]:
+        resp = requests.get(
+            "https://open.feishu.cn/open-apis/bot/v3/info",
+            headers=self._headers(),
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise RuntimeError(f"Feishu bot info failed: {data}")
+        bot = data.get("bot") or ((data.get("data") or {}).get("bot")) or {}
+        return bot if isinstance(bot, dict) else {}
 
     def send_text(self, chat_id: str, text: str) -> Optional[str]:
         payload = {
@@ -487,6 +502,57 @@ def _json_loads_safely(raw: Any) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _stringify_optional(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
+def _normalize_feishu_ws_event_payload(payload: Any) -> Dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+
+    header = getattr(payload, "header", None)
+    event = getattr(payload, "event", None)
+    message = getattr(event, "message", None) if event is not None else None
+    sender = getattr(event, "sender", None) if event is not None else None
+    sender_id = getattr(sender, "sender_id", None) if sender is not None else None
+
+    normalized: Dict[str, Any] = {
+        "header": {
+            "event_type": _stringify_optional(getattr(header, "event_type", None)) or _FEISHU_EVENT_MESSAGE_RECEIVE,
+            "event_id": _stringify_optional(getattr(header, "event_id", None)),
+            "token": _stringify_optional(getattr(header, "token", None)),
+        },
+        "event": {
+            "chat_id": _stringify_optional(getattr(message, "chat_id", None)),
+            "root_id": _stringify_optional(getattr(message, "root_id", None)),
+            "thread_id": _stringify_optional(getattr(message, "thread_id", None)),
+            "message": {
+                "message_id": _stringify_optional(getattr(message, "message_id", None)),
+                "root_id": _stringify_optional(getattr(message, "root_id", None)),
+                "thread_id": _stringify_optional(getattr(message, "thread_id", None)),
+                "chat_id": _stringify_optional(getattr(message, "chat_id", None)),
+                "message_type": _stringify_optional(getattr(message, "message_type", None)),
+                "content": getattr(message, "content", None) or "",
+                "parent_id": _stringify_optional(getattr(message, "parent_id", None)),
+            },
+            "sender": {
+                "sender_type": _stringify_optional(getattr(sender, "sender_type", None)),
+                "tenant_key": _stringify_optional(getattr(sender, "tenant_key", None)),
+                "sender_id": {
+                    "open_id": _stringify_optional(getattr(sender_id, "open_id", None)),
+                    "union_id": _stringify_optional(getattr(sender_id, "union_id", None)),
+                    "user_id": _stringify_optional(getattr(sender_id, "user_id", None)),
+                },
+            },
+        },
+    }
+    return normalized
+
+
 def _process_feishu_event_payload(
     *,
     runtime: Any,
@@ -494,23 +560,37 @@ def _process_feishu_event_payload(
     payload: Any,
     expected_event_type: str = _FEISHU_EVENT_MESSAGE_RECEIVE,
 ) -> bool:
+    payload = _normalize_feishu_ws_event_payload(payload)
     if not isinstance(payload, dict):
         return False
     header = payload.get("header") or {}
     event = payload.get("event") or {}
     event_type = (header.get("event_type") or (event or {}).get("type") or "").strip()
     if event_type != expected_event_type:
+        logger.debug("Feishu ignored event_type=%s", event_type or "<empty>")
         return False
     event_id = (header.get("event_id") or "").strip()
     if event_id and deduper.seen_or_record(f"event:{event_id}"):
+        logger.debug("Feishu deduped event_id=%s", event_id)
         return True
     if not isinstance(event, dict):
         return True
+    sender = event.get("sender") or {}
+    sender_open_id = ""
+    if isinstance(sender, dict):
+        sender_type = (sender.get("sender_type") or "").strip().lower()
+        sender_ids = sender.get("sender_id") or {}
+        if isinstance(sender_ids, dict):
+            sender_open_id = (sender_ids.get("open_id") or "").strip()
+        if sender_type == "app":
+            logger.debug("Feishu ignored self-sent bot message event")
+            return True
     msg = event.get("message") or {}
     if not isinstance(msg, dict):
         return True
     message_id = (msg.get("message_id") or "").strip()
     if message_id and deduper.seen_or_record(f"message:{message_id}"):
+        logger.debug("Feishu deduped message_id=%s", message_id)
         return True
     message_type = (msg.get("message_type") or "").strip().lower()
     chat_id = (event.get("chat_id") or msg.get("chat_id") or "").strip()
@@ -521,8 +601,17 @@ def _process_feishu_event_payload(
         or msg.get("thread_id")
     )
     if not chat_id:
+        logger.warning("Feishu event missing chat_id; message_type=%s message_id=%s", message_type, message_id)
         return True
     content = _json_loads_safely(msg.get("content"))
+    logger.info(
+        "Feishu message received type=%s chat_id=%s thread_id=%s message_id=%s sender_open_id=%s",
+        message_type or "<empty>",
+        chat_id,
+        thread_id or "",
+        message_id or "",
+        sender_open_id or "",
+    )
 
     if message_type == "text":
         text = (content.get("text") or "").strip()
@@ -535,8 +624,14 @@ def _process_feishu_event_payload(
             runtime.submit(runtime.handle_file(chat_id, thread_id, file_key, file_name))
     elif message_type == "image":
         runtime.submit(
-            runtime.handle_text(chat_id, thread_id, "收到图片。若需分析请上传 .h5ad 或发送文字指令。")
+            runtime.handle_text(
+                chat_id,
+                thread_id,
+                "Image received. Upload a .h5ad file or send a text instruction if you want analysis.",
+            )
         )
+    else:
+        logger.debug("Feishu ignored unsupported message_type=%s", message_type or "<empty>")
     return True
 
 
@@ -556,7 +651,15 @@ class FeishuRuntime:
         self._loop.run_forever()
 
     def submit(self, coro: asyncio.Future) -> None:
-        asyncio.run_coroutine_threadsafe(coro, self._loop)
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+        def _log_result(done: "concurrent.futures.Future[Any]") -> None:
+            try:
+                done.result()
+            except Exception:
+                logger.exception("Feishu runtime task failed")
+
+        fut.add_done_callback(_log_result)
 
     @staticmethod
     def _parse_command(text: str) -> List[str]:
@@ -731,7 +834,10 @@ class FeishuRuntime:
         if cmd == "/cancel":
             await self._handle_cancel(chat_id, route)
             return
-        if cmd in {"/start", "/help"}:
+        if cmd == "/start":
+            await self._handle_start(chat_id)
+            return
+        if cmd == "/help":
             await self._handle_help(chat_id)
             return
         if cmd == "/status":
@@ -1124,30 +1230,11 @@ class FeishuRuntime:
         running.task.cancel()
         self._client.send_text(chat_id, "⏹ Cancellation requested.")
 
+    async def _handle_start(self, chat_id: str) -> None:
+        self._client.send_text(chat_id, render_start_text())
+
     async def _handle_help(self, chat_id: str) -> None:
-        text = (
-            "OmicVerse Jarvis\n"
-            "--------------------\n"
-            "Quick Start:\n"
-            "Send a natural-language request to start an analysis.\n"
-            "Upload a .h5ad file or use /load <filename> to work with existing data.\n\n"
-            "Data Commands:\n"
-            "/workspace Show the workspace\n"
-            "/ls [path] List files\n"
-            "/find <pattern> Search files\n"
-            "/load <filename> Load data\n"
-            "/shell <command> Run a whitelisted shell command\n\n"
-            "Session Commands:\n"
-            "/kernel | /kernel ls | /kernel new <name> | /kernel use <name>\n"
-            "/memory Analysis history\n"
-            "/usage Token usage\n"
-            "/model [name] Show or switch model\n"
-            "/status Current status\n"
-            "/save Export current.h5ad\n"
-            "/cancel Cancel analysis\n"
-            "/reset Reset the session"
-        )
-        self._client.send_text(chat_id, text)
+        self._client.send_text(chat_id, render_help_text())
 
     async def _handle_status(self, chat_id: str, session: Any, route: str) -> None:
         lines: List[str] = []
@@ -1189,7 +1276,7 @@ class FeishuRuntime:
             "",
         ]
         if h5ad_files:
-            lines.append(f"📊 数据文件 ({len(h5ad_files)})")
+            lines.append(f"📊 Data files ({len(h5ad_files)})")
             for f in h5ad_files[:10]:
                 try:
                     mb = f.stat().st_size / 1_048_576
@@ -1197,15 +1284,15 @@ class FeishuRuntime:
                 except OSError:
                     lines.append(f"- {f.name}")
             if len(h5ad_files) > 10:
-                lines.append(f"... 还有 {len(h5ad_files) - 10} 个")
+                lines.append(f"... and {len(h5ad_files) - 10} more")
         else:
-            lines.append("📊 数据文件 (空)")
+            lines.append("📊 Data files (empty)")
         lines += [
             "",
             f"📋 AGENTS.md {'✅' if agents_md else '—'}",
-            f"🧠 今日记忆 {'✅' if today_log.exists() else '—'}",
+            f"🧠 Today's memory {'✅' if today_log.exists() else '—'}",
             "",
-            "可用: /load <文件名> | /ls | /memory",
+            "Available: /load <filename> | /ls | /memory",
         ]
         self._client.send_text(chat_id, "\n".join(lines))
 
@@ -1218,7 +1305,7 @@ class FeishuRuntime:
     async def _handle_find(self, chat_id: str, session: Any, pattern: str) -> None:
         pattern = (pattern or "").strip()
         if not pattern:
-            self._client.send_text(chat_id, "用法: /find <模式>，例如 /find *.h5ad")
+            self._client.send_text(chat_id, "Usage: /find <pattern>, for example /find *.h5ad")
             return
         cmd = f"find . -name {pattern}"
         out = session.shell.exec(cmd, cwd=session.workspace)
@@ -1228,25 +1315,25 @@ class FeishuRuntime:
     async def _handle_load(self, chat_id: str, session: Any, filename: str) -> None:
         filename = (filename or "").strip()
         if not filename:
-            self._client.send_text(chat_id, "用法: /load <文件名>，例如 /load pbmc3k.h5ad")
+            self._client.send_text(chat_id, "Usage: /load <filename>, for example /load pbmc3k.h5ad")
             return
-        self._client.send_text(chat_id, f"⏳ 正在加载 {filename} ...")
+        self._client.send_text(chat_id, f"⏳ Loading {filename} ...")
         try:
             adata = await asyncio.to_thread(session.load_from_workspace, filename)
         except Exception as exc:
             logger.exception("Feishu /load failed")
-            self._client.send_text(chat_id, f"❌ 加载失败: {exc}")
+            self._client.send_text(chat_id, f"❌ Load failed: {exc}")
             return
         if adata is None:
             files = session.list_h5ad_files()
             hint = ""
             if files:
-                hint = "\n可用文件: " + "  ".join(f.name for f in files[:5])
-            self._client.send_text(chat_id, f"❌ 未找到 {filename}{hint}")
+                hint = "\nAvailable files: " + "  ".join(f.name for f in files[:5])
+            self._client.send_text(chat_id, f"❌ File not found: {filename}{hint}")
             return
         self._client.send_text(
             chat_id,
-            f"✅ 加载成功\n🔬 {adata.n_obs:,} cells × {adata.n_vars:,} genes\n📁 {filename}",
+            f"✅ Loaded successfully\n🔬 {adata.n_obs:,} cells × {adata.n_vars:,} genes\n📁 {filename}",
         )
 
     async def _handle_shell(self, chat_id: str, session: Any, cmd: str) -> None:
@@ -1254,7 +1341,7 @@ class FeishuRuntime:
         if not cmd:
             self._client.send_text(
                 chat_id,
-                "用法: /shell <命令>\n允许: ls find cat head wc file du pwd tree",
+                "Usage: /shell <command>\nAllowed: ls find cat head wc file du pwd tree",
             )
             return
         out = session.shell.exec(cmd, cwd=session.workspace)
@@ -1263,13 +1350,13 @@ class FeishuRuntime:
 
     async def _handle_memory(self, chat_id: str, session: Any) -> None:
         text = session.get_recent_memory_text()
-        for chunk in self._text_chunks(f"🧠 分析历史（近两天）\n\n{text}", limit=3200):
+        for chunk in self._text_chunks(f"🧠 Analysis history (last two days)\n\n{text}", limit=3200):
             self._client.send_text(chat_id, chunk)
 
     async def _handle_usage(self, chat_id: str, session: Any) -> None:
         usage = session.last_usage
         if usage is None:
-            self._client.send_text(chat_id, "ℹ️ 暂无用量数据，请先进行一次分析。")
+            self._client.send_text(chat_id, "ℹ️ No usage data yet. Run an analysis first.")
             return
 
         def _attr(obj: Any, *names: str, default: str = "?") -> str:
@@ -1280,18 +1367,18 @@ class FeishuRuntime:
             return default
 
         lines = [
-            "📊 Token 用量（最近一次）",
+            "📊 Token usage (most recent run)",
             "--------------------",
-            f"输入: {_attr(usage, 'input_tokens')}",
-            f"输出: {_attr(usage, 'output_tokens')}",
-            f"合计: {_attr(usage, 'total_tokens')}",
+            f"Input: {_attr(usage, 'input_tokens')}",
+            f"Output: {_attr(usage, 'output_tokens')}",
+            f"Total: {_attr(usage, 'total_tokens')}",
         ]
         cr = _attr(usage, "cache_read_input_tokens", default="")
         cc = _attr(usage, "cache_creation_input_tokens", default="")
         if cr and cr != "?":
-            lines.append(f"缓存读取: {cr}")
+            lines.append(f"Cache read: {cr}")
         if cc and cc != "?":
-            lines.append(f"缓存写入: {cc}")
+            lines.append(f"Cache write: {cc}")
         self._client.send_text(chat_id, "\n".join(lines))
 
     async def _handle_model(self, chat_id: str, model_name: str) -> None:
@@ -1304,26 +1391,26 @@ class FeishuRuntime:
         self._sm._model = model_name
         self._client.send_text(
             chat_id,
-            f"✅ 模型已切换为 {model_name}\n请 /reset 重启 kernel 使新模型生效。",
+            f"✅ Model switched to {model_name}\nUse /reset to recreate the kernel and apply it.",
         )
 
     async def _handle_save(self, chat_id: str, session: Any) -> None:
         if session.adata is None:
-            self._client.send_text(chat_id, "❌ 没有数据，请先 /load 或完成分析。")
+            self._client.send_text(chat_id, "❌ No dataset loaded. Use /load or run an analysis first.")
             return
-        self._client.send_text(chat_id, "⏳ 正在保存 current.h5ad ...")
+        self._client.send_text(chat_id, "⏳ Saving current.h5ad ...")
         try:
             path = await asyncio.to_thread(session.save_adata)
             if not path or not Path(path).exists():
-                self._client.send_text(chat_id, "❌ 保存失败，请重试。")
+                self._client.send_text(chat_id, "❌ Save failed. Please try again.")
                 return
             data = Path(path).read_bytes()
             await asyncio.to_thread(self._client.send_file_bytes, chat_id, data, "current.h5ad")
             a = session.adata
-            self._client.send_text(chat_id, f"💾 已发送 current.h5ad\n🔬 {a.n_obs:,} cells × {a.n_vars:,} genes")
+            self._client.send_text(chat_id, f"💾 Sent current.h5ad\n🔬 {a.n_obs:,} cells × {a.n_vars:,} genes")
         except Exception as exc:
             logger.exception("Feishu /save failed")
-            self._client.send_text(chat_id, f"❌ 保存失败: {exc}")
+            self._client.send_text(chat_id, f"❌ Save failed: {exc}")
 
     async def _handle_kernel(self, chat_id: str, session: Any, route: str, args: List[str]) -> None:
         if not args:
@@ -1331,13 +1418,13 @@ class FeishuRuntime:
             kst = session.kernel_status()
             alive = "🟢" if kst.get("alive") else "🔴"
             text = (
-                "⚙️ Kernel 状态\n"
+                "⚙️ Kernel status\n"
                 "--------------------\n"
-                f"🧩 当前: {kname}\n"
-                f"{alive} {'运行中' if kst.get('alive') else '未启动/已关闭'}\n"
+                f"🧩 Current: {kname}\n"
+                f"{alive} {'Running' if kst.get('alive') else 'Stopped / Closed'}\n"
                 f"💬 Prompts: {kst.get('prompt_count', 0)} / {kst.get('max_prompts', '?')}\n"
                 f"🆔 Session: {kst.get('session_id') or '-'}\n\n"
-                "子命令: /kernel ls | /kernel new 名称 | /kernel use 名称"
+                "Subcommands: /kernel ls | /kernel new <name> | /kernel use <name>"
             )
             self._client.send_text(chat_id, text)
             return
@@ -1352,12 +1439,12 @@ class FeishuRuntime:
             return
         if sub in {"new", "use"}:
             if len(args) < 2:
-                self._client.send_text(chat_id, "用法: /kernel new 名称 或 /kernel use 名称")
+                self._client.send_text(chat_id, "Usage: /kernel new <name> or /kernel use <name>")
                 return
             target = args[1]
             running = self._tasks.get(route)
             if running and not running.task.done():
-                self._client.send_text(chat_id, "⏳ 当前有分析在运行，请先 /cancel 或等待完成。")
+                self._client.send_text(chat_id, "⏳ An analysis is currently running. Use /cancel or wait for it to finish.")
                 return
             try:
                 if sub == "new":
@@ -1365,12 +1452,12 @@ class FeishuRuntime:
                 else:
                     self._sm.switch_kernel(session.user_id, target, create=False)
                 self._client.send_text(
-                    chat_id, f"✅ 已切换到 kernel: {self._sm.get_active_kernel(session.user_id)}"
+                    chat_id, f"✅ Switched to kernel: {self._sm.get_active_kernel(session.user_id)}"
                 )
             except Exception as exc:
-                self._client.send_text(chat_id, f"❌ kernel 操作失败: {exc}")
+                self._client.send_text(chat_id, f"❌ Kernel operation failed: {exc}")
             return
-        self._client.send_text(chat_id, "用法: /kernel | /kernel ls | /kernel new 名称 | /kernel use 名称")
+        self._client.send_text(chat_id, "Usage: /kernel | /kernel ls | /kernel new <name> | /kernel use <name>")
 
     @staticmethod
     def _text_chunks(text: str, limit: int = _MAX_TEXT) -> List[str]:
@@ -1413,6 +1500,15 @@ def run_feishu_bot(
     encrypt_key: Optional[str] = None,
 ) -> None:
     client = FeishuClient(app_id, app_secret)
+    try:
+        bot_info = client.get_bot_info()
+        logger.info(
+            "Feishu bot probe succeeded bot_name=%s bot_open_id=%s",
+            (bot_info.get("bot_name") or bot_info.get("name") or "").strip() or "unknown",
+            (bot_info.get("open_id") or "").strip() or "unknown",
+        )
+    except Exception as exc:
+        logger.warning("Feishu bot probe failed: %s", exc)
     runtime = FeishuRuntime(client, session_manager)
     base_dir = getattr(session_manager, "_base", Path(os.path.expanduser("~/.ovjarvis")))
     deduper = FeishuDeduper(Path(base_dir) / "feishu" / "dedup" / "global.json")
@@ -1466,11 +1562,19 @@ def run_feishu_ws_bot(
     runtime = FeishuRuntime(client, session_manager)
     base_dir = getattr(session_manager, "_base", Path(os.path.expanduser("~/.ovjarvis")))
     deduper = FeishuDeduper(Path(base_dir) / "feishu" / "dedup" / "global.json")
+    try:
+        bot_info = client.get_bot_info()
+        logger.info(
+            "Feishu bot probe succeeded bot_name=%s bot_open_id=%s",
+            (bot_info.get("bot_name") or bot_info.get("name") or "").strip() or "unknown",
+            (bot_info.get("open_id") or "").strip() or "unknown",
+        )
+    except Exception as exc:
+        logger.warning("Feishu bot probe failed: %s", exc)
 
     def _on_message(data: Any) -> None:
         try:
-            raw = lark.JSON.marshal(data)
-            payload = json.loads(raw) if isinstance(raw, str) else {}
+            payload = _normalize_feishu_ws_event_payload(data)
             _process_feishu_event_payload(
                 runtime=runtime,
                 deduper=deduper,

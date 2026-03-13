@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .. import _fmt
-from ..channel_language import tr
+from ..channel_language import response_language_instruction, tr
+from ..channel_shared import render_help_text, render_start_text
 from ..config import default_state_dir
 from ..gateway.routing import GatewaySessionRegistry, SessionKey
 from ..model_help import render_model_help
@@ -67,9 +68,6 @@ class AccessControl:
             return True
         return False
 
-
-<<<<<<< Updated upstream
-=======
 def telegram_route_from_update(update: Any) -> ConversationRoute:
     chat = getattr(update, "effective_chat", None)
     msg = getattr(update, "effective_message", None)
@@ -508,7 +506,7 @@ class TelegramRuntimePresenter:
             tail = 200
         return (
             text[:head].rstrip()
-            + "\n\n[...内容较长，已省略中间部分...]\n\n"
+            + "\n\n[...long response truncated in the middle...]\n\n"
             + text[-tail:].lstrip()
         )
 
@@ -769,9 +767,6 @@ class TelegramDelivery:
     @staticmethod
     def _is_not_modified_error(exc: Exception) -> bool:
         return "message is not modified" in str(exc).strip().lower()
-
-
->>>>>>> Stashed changes
 # ---------------------------------------------------------------------------
 # Bot builder
 # ---------------------------------------------------------------------------
@@ -1024,7 +1019,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         if user is None:
             return False
         if not ac.allows(user.id, user.username):
-            await update.message.reply_text("⛔ 您没有访问权限。")
+            await update.message.reply_text("⛔ You do not have access.")
             return False
         return True
 
@@ -1048,10 +1043,10 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             logger.exception("Failed to create session")
             await update.message.reply_text(
                 _fmt.error_message(
-                    f"Agent 初始化失败：{exc}\n"
-                    "请检查 --model 参数，或运行 "
+                    f"Agent initialization failed: {exc}\n"
+                    "Check the <code>--model</code> argument, or run "
                     "<code>import omicverse as ov; print(ov.list_supported_models())</code> "
-                    "查看可用模型。"
+                    "to see the available models."
                 ),
                 parse_mode="HTML",
             )
@@ -1072,9 +1067,9 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
 
     def _analysis_keyboard() -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup([[
-            InlineKeyboardButton("💾 保存",  callback_data="jarvis:save"),
-            InlineKeyboardButton("📊 状态",  callback_data="jarvis:status"),
-            InlineKeyboardButton("🧠 历史",  callback_data="jarvis:memory"),
+            InlineKeyboardButton("💾 Save",   callback_data="jarvis:save"),
+            InlineKeyboardButton("📊 Status", callback_data="jarvis:status"),
+            InlineKeyboardButton("🧠 Memory", callback_data="jarvis:memory"),
         ]])
 
     def _chat_lock(chat_id: int) -> asyncio.Lock:
@@ -1108,7 +1103,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 "You are OmicVerse Jarvis, a bioinformatics AI assistant.",
                 "The user is chatting with you while a background analysis is running in the background.",
                 "Answer concisely and helpfully. Do NOT execute code or call tools.",
-                "Reply in the same language the user uses.",
+                response_language_instruction(user_text),
             ]
             if running_request:
                 system_lines.append(f"\nCurrently running analysis: {running_request[:300]}")
@@ -1129,7 +1124,11 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 {"role": "user",   "content": user_text},
             ]
             response = await session.agent._llm.chat(messages, tools=None, tool_choice=None)
-            reply = (response.content or "").strip() or "💬  分析进行中，稍后再试。"
+            reply = (response.content or "").strip() or tr(
+                user_text,
+                en="💬  Analysis in progress. Please try again shortly.",
+                zh="💬  分析进行中，请稍后再试。",
+            )
             async with _chat_lock(chat_id):
                 await _safe_send_message(
                     bot, chat_id, _fmt.md_to_html(reply), parse_mode="HTML"
@@ -1140,7 +1139,11 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 async with _chat_lock(chat_id):
                     await _safe_send_message(
                         bot, chat_id,
-                        "⏳  后台分析进行中，请等待完成。使用 <code>/cancel</code> 取消。",
+                        tr(
+                            user_text,
+                            en="⏳  Background analysis is still running. Please wait or use <code>/cancel</code>.",
+                            zh="⏳  后台分析进行中，请等待完成。使用 <code>/cancel</code> 取消。",
+                        ),
                         parse_mode="HTML",
                     )
             except Exception:
@@ -1291,65 +1294,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
     async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await _guard(update):
             return
-        text = tr(
-            getattr(update.message, "text", "") or "",
-            en=(
-                "👋  <b>OmicVerse Jarvis</b>\n"
-                f"{_fmt._DIV}\n"
-                "A mobile single-cell analysis assistant.\n\n"
-                "<b>Quick Start</b>\n"
-                "1. Upload a <code>.h5ad</code> file to the workspace via <code>scp</code> or <code>sftp</code>\n"
-                "2. Use <code>/workspace</code> and then <code>/load</code> to open it\n"
-                "3. Send a request such as:\n"
-                "   <i>Run QC with nUMI&gt;500 and mito&lt;0.2, then normalize and build UMAP</i>\n\n"
-                "<b>Data Commands</b>\n"
-                "<code>/workspace</code>  View workspace\n"
-                "<code>/ls</code>         List files\n"
-                "<code>/find</code>       Search files\n"
-                "<code>/load</code>       Load data\n"
-                "<code>/shell</code>      Run shell commands\n\n"
-                "<b>Session Commands</b>\n"
-                "<code>/kernel</code>     Current kernel status\n"
-                "<code>/kernel ls</code>  List kernels\n"
-                "<code>/kernel new x</code> Create and switch kernel\n"
-                "<code>/kernel use x</code> Switch kernel\n"
-                "<code>/memory</code>     Analysis history\n"
-                "<code>/usage</code>      Token usage\n"
-                "<code>/model</code>      Switch model\n"
-                "<code>/status</code>     Data status\n"
-                "<code>/save</code>       Download h5ad\n"
-                "<code>/cancel</code>     Cancel current analysis\n"
-                "<code>/reset</code>      Reset session\n"
-            ),
-            zh=(
-                "👋  <b>OmicVerse Jarvis</b>\n"
-                f"{_fmt._DIV}\n"
-                "移动端单细胞分析助手，支持中英文自然语言指令。\n\n"
-                "<b>快速开始</b>\n"
-                "1. 通过 <code>scp</code>/<code>sftp</code> 上传 .h5ad 到 workspace\n"
-                "2. <code>/workspace</code> 查看文件 → <code>/load</code> 加载\n"
-                "3. 直接发送分析需求，例如：\n"
-                "   <i>质控 nUMI&gt;500 mito&lt;0.2，然后标准化、UMAP</i>\n\n"
-                "<b>数据命令</b>\n"
-                "<code>/workspace</code>  查看 workspace\n"
-                "<code>/ls</code>         列出文件\n"
-                "<code>/find</code>       搜索文件\n"
-                "<code>/load</code>       加载数据\n"
-                "<code>/shell</code>      执行 shell 命令\n\n"
-                "<b>会话命令</b>\n"
-                "<code>/kernel</code>     当前 kernel 状态\n"
-                "<code>/kernel ls</code>  列出所有 kernel\n"
-                "<code>/kernel new x</code> 新建并切换 kernel\n"
-                "<code>/kernel use x</code> 切换 kernel\n"
-                "<code>/memory</code>     分析历史\n"
-                "<code>/usage</code>      token 用量\n"
-                "<code>/model</code>      切换模型\n"
-                "<code>/status</code>     数据状态\n"
-                "<code>/save</code>       下载 h5ad\n"
-                "<code>/cancel</code>     取消当前分析\n"
-                "<code>/reset</code>      重置会话\n"
-            ),
-        )
+        text = render_start_text(getattr(update.message, "text", "") or "", html=True)
         await update.message.reply_text(text, parse_mode="HTML")
 
     # ------------------------------------------------------------------
@@ -1359,69 +1304,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
     async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await _guard(update):
             return
-        text = tr(
-            getattr(update.message, "text", "") or "",
-            en=(
-                "📚  <b>User Guide</b>\n"
-                f"{_fmt._DIV}\n"
-                "<b>Analysis Examples</b>\n"
-                "• <code>QC with nUMI&gt;500 and mito&lt;0.2</code>\n"
-                "• <code>Normalize, find HVGs, PCA, UMAP</code>\n"
-                "• <code>Leiden clustering resolution=0.5</code>\n"
-                "• <code>Differential expression cluster 1 vs 2</code>\n"
-                "• <code>GO enrichment for cluster 0</code>\n\n"
-                "<b>Data Management</b>\n"
-                "• <code>/workspace</code> — workspace overview\n"
-                "• <code>/ls [path]</code> — list files\n"
-                "• <code>/find &lt;pattern&gt;</code> — search files\n"
-                "• <code>/load &lt;filename&gt;</code> — load data\n"
-                "• <code>/shell &lt;command&gt;</code> — run whitelisted shell commands\n\n"
-                "<b>Session Management</b>\n"
-                "• <code>/kernel</code> — kernel health and prompt budget\n"
-                "• <code>/kernel ls</code> — list kernels\n"
-                "• <code>/kernel new name</code> — create and switch kernel\n"
-                "• <code>/kernel use name</code> — switch kernel\n"
-                "• <code>/memory</code> — recent analysis history\n"
-                "• <code>/usage</code> — latest token usage\n"
-                "• <code>/model [name]</code> — view or switch model\n"
-                "• <code>/status</code> — current data status\n"
-                "• <code>/save</code> — download <code>.h5ad</code>\n"
-                "• <code>/cancel</code> — cancel the current analysis\n"
-                "• <code>/reset</code> — reset the session and restart the kernel\n\n"
-                "<b>Custom Instructions</b>\n"
-                "Create an <code>AGENTS.md</code> file in the workspace to inject persistent preferences."
-            ),
-            zh=(
-                "📚  <b>使用指南</b>\n"
-                f"{_fmt._DIV}\n"
-                "<b>分析示例</b>\n"
-                "• <code>质控 nUMI&gt;500 mito&lt;0.2</code>\n"
-                "• <code>标准化、高变基因、PCA、UMAP</code>\n"
-                "• <code>Leiden 聚类 resolution=0.5</code>\n"
-                "• <code>差异表达 cluster 1 vs 2</code>\n"
-                "• <code>GO 富集分析 cluster 0</code>\n\n"
-                "<b>数据管理</b>\n"
-                "• <code>/workspace</code> — workspace 概览\n"
-                "• <code>/ls [路径]</code> — 列出文件\n"
-                "• <code>/find &lt;模式&gt;</code> — 搜索文件\n"
-                "• <code>/load &lt;文件名&gt;</code> — 加载数据\n"
-                "• <code>/shell &lt;命令&gt;</code> — 执行 shell（白名单：ls find cat head wc file du pwd tree）\n\n"
-                "<b>会话管理</b>\n"
-                "• <code>/kernel</code> — 当前 kernel 健康 + prompt 余量\n"
-                "• <code>/kernel ls</code> — 列出可用 kernels\n"
-                "• <code>/kernel new 名称</code> — 新建并切换 kernel\n"
-                "• <code>/kernel use 名称</code> — 切换到指定 kernel\n"
-                "• <code>/memory</code> — 近两天分析日志\n"
-                "• <code>/usage</code> — 最近一次 token 用量\n"
-                "• <code>/model [名称]</code> — 查看/切换 LLM 模型\n"
-                "• <code>/status</code> — 当前数据信息\n"
-                "• <code>/save</code> — 下载 .h5ad\n"
-                "• <code>/cancel</code> — 取消正在运行的分析\n"
-                "• <code>/reset</code> — 清空会话并重启 kernel\n\n"
-                "<b>自定义指令</b>\n"
-                "在 workspace 创建 <code>AGENTS.md</code>，写入偏好（语言、分析风格等），每次请求自动注入。"
-            ),
-        )
+        text = render_help_text(getattr(update.message, "text", "") or "", html=True)
         await update.message.reply_text(text, parse_mode="HTML")
 
     # ------------------------------------------------------------------
@@ -1452,14 +1335,8 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             lines.append("📭  No dataset loaded  ·  use <code>/load</code>")
 
         # Task status
-<<<<<<< Updated upstream
-        task = _tasks.get(user.id)
-        if task and not task.done():
-            lines.append("⚙️  分析中…  ·  <code>/cancel</code> 取消")
-=======
         if runtime.task_state(route).running:
             lines.append("⚙️  Analysis running...  ·  <code>/cancel</code>")
->>>>>>> Stashed changes
 
         try:
             info = session.agent.get_current_session_info()
@@ -1518,10 +1395,13 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         if session is None:
             return
         if session.adata is None:
-            await update.message.reply_text("❌  没有数据，请先 <code>/load</code> 加载。", parse_mode="HTML")
+            await update.message.reply_text(
+                "❌  No dataset loaded. Use <code>/load</code> first.",
+                parse_mode="HTML",
+            )
             return
 
-        await update.message.reply_text("⏳  正在保存…")
+        await update.message.reply_text("⏳  Saving...")
         path = session.save_adata()
         if path and path.exists():
             a = session.adata
@@ -1533,7 +1413,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                     caption=f"💾  {a.n_obs:,} cells × {a.n_vars:,} genes",
                 )
         else:
-            await update.message.reply_text("❌  保存失败，请重试。")
+            await update.message.reply_text("❌  Save failed. Please try again.")
 
     # ------------------------------------------------------------------
     # /usage
@@ -1548,7 +1428,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
 
         usage = session.last_usage
         if usage is None:
-            await update.message.reply_text("ℹ️  暂无用量数据，请先进行一次分析。")
+            await update.message.reply_text("ℹ️  No usage data yet. Run an analysis first.")
             return
 
         def _attr(obj: Any, *names: str, default: str = "?") -> str:
@@ -1559,19 +1439,19 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             return default
 
         lines = [
-            "📊  <b>Token 用量</b>  （最近一次）",
+            "📊  <b>Token Usage</b>  (most recent run)",
             _fmt._DIV,
-            f"输入：<code>{_attr(usage, 'input_tokens')}</code>",
-            f"输出：<code>{_attr(usage, 'output_tokens')}</code>",
-            f"合计：<code>{_attr(usage, 'total_tokens')}</code>",
+            f"Input: <code>{_attr(usage, 'input_tokens')}</code>",
+            f"Output: <code>{_attr(usage, 'output_tokens')}</code>",
+            f"Total: <code>{_attr(usage, 'total_tokens')}</code>",
         ]
         # cache_read / cache_creation if present (Anthropic prompt caching)
         cr = _attr(usage, "cache_read_input_tokens", default="")
         cc = _attr(usage, "cache_creation_input_tokens", default="")
         if cr and cr != "?":
-            lines.append(f"缓存读取：<code>{cr}</code>")
+            lines.append(f"Cache read: <code>{cr}</code>")
         if cc and cc != "?":
-            lines.append(f"缓存写入：<code>{cc}</code>")
+            lines.append(f"Cache write: <code>{cc}</code>")
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
     # ------------------------------------------------------------------
@@ -1593,8 +1473,8 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         new_model = args[0]
         sm._model = new_model
         await update.message.reply_text(
-            f"✅  模型已切换为 <code>{_fmt.esc(new_model)}</code>\n"
-            f"<i>请 /reset 重启 kernel 使新模型生效（当前 kernel 不受影响）。</i>",
+            f"✅  Model switched to <code>{_fmt.esc(new_model)}</code>\n"
+            "<i>Use /reset to recreate the kernel and apply it.</i>",
             parse_mode="HTML",
         )
 
@@ -1624,24 +1504,23 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             remaining = (mp - p) if isinstance(mp, int) else "∞"
 
             lines = [
-                "⚙️  <b>Kernel 状态</b>",
+                "⚙️  <b>Kernel Status</b>",
                 _fmt._DIV,
-                f"🧩  当前：<code>{_fmt.esc(kname)}</code>",
-                f"{icon}  {'运行中' if alive else '未启动 / 已关闭'}",
-                f"💬  Prompts：<code>{p}</code> / <code>{mp}</code>（剩余 {remaining}）",
-                f"🆔  Session：<code>{_fmt.esc(str(sid))}</code>",
+                f"🧩  Current: <code>{_fmt.esc(kname)}</code>",
+                f"{icon}  {'Running' if alive else 'Stopped / Closed'}",
+                f"💬  Prompts: <code>{p}</code> / <code>{mp}</code> (remaining {remaining})",
+                f"🆔  Session: <code>{_fmt.esc(str(sid))}</code>",
                 "",
-                "子命令：<code>/kernel ls</code> · <code>/kernel new 名称</code> · <code>/kernel use 名称</code>",
+                "Subcommands: <code>/kernel ls</code> · <code>/kernel new name</code> · <code>/kernel use name</code>",
             ]
             if isinstance(mp, int) and p >= mp * 0.8:
                 lines += [
                     "",
-                    "⚠️  即将到达上限，下次分析后 kernel 将重启（变量清空）。",
-                    "   可用 <code>/reset</code> 手动重启，或启动时增大 <code>--max-prompts</code>。",
+                    "⚠️  The prompt budget is almost exhausted. The kernel will restart after the next analysis.",
+                    "   Use <code>/reset</code> to restart manually, or increase <code>--max-prompts</code>.",
                 ]
-            task = _tasks.get(user_id)
-            if task and not task.done():
-                lines += ["", "⚙️  当前有分析正在运行  ·  <code>/cancel</code> 取消"]
+            if runtime.task_state(route).running:
+                lines += ["", "⚙️  Analysis running  ·  <code>/cancel</code>"]
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
 
@@ -1650,7 +1529,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             active = sm.get_active_kernel(user_id)
             names = sm.list_kernels(user_id)
             lines = [
-                "🧩  <b>Kernel 列表</b>",
+                "🧩  <b>Kernels</b>",
                 _fmt._DIV,
             ]
             for name in names:
@@ -1658,8 +1537,8 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 lines.append(f"{mark}  <code>{_fmt.esc(name)}</code>")
             lines += [
                 "",
-                "切换：<code>/kernel use 名称</code>",
-                "新建：<code>/kernel new 名称</code>",
+                "Switch: <code>/kernel use name</code>",
+                "Create: <code>/kernel new name</code>",
             ]
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
             return
@@ -1668,14 +1547,14 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             task = _tasks.get(user_id)
             if task and not task.done():
                 await update.message.reply_text(
-                    "⏳  当前有分析正在运行，请先等待完成或使用 <code>/cancel</code>。",
+                    "⏳  An analysis is currently running. Wait for it to finish or use <code>/cancel</code>.",
                     parse_mode="HTML",
                 )
                 return
             if len(args) < 2:
                 await update.message.reply_text(
-                    "用法：<code>/kernel new 名称</code> 或 <code>/kernel use 名称</code>\n"
-                    "名称规则：字母/数字/._-，长度 1-32。",
+                    "Usage: <code>/kernel new name</code> or <code>/kernel use name</code>\n"
+                    "Names may contain letters, numbers, <code>.</code>, <code>_</code>, or <code>-</code>, with length 1-32.",
                     parse_mode="HTML",
                 )
                 return
@@ -1683,24 +1562,24 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             try:
                 if sub in {"new", "create"}:
                     sm.create_kernel(user_id, name, switch=True)
-                    action = "新建并切换"
+                    action = "Created and switched"
                 else:
                     sm.switch_kernel(user_id, name, create=False)
-                    action = "切换"
+                    action = "Switched"
             except Exception as exc:
                 await update.message.reply_text(
                     _fmt.error_message(str(exc)), parse_mode="HTML"
                 )
                 return
             await update.message.reply_text(
-                f"✅  已{action}到 kernel：<code>{_fmt.esc(sm.get_active_kernel(user_id))}</code>",
+                f"✅  {action} to kernel: <code>{_fmt.esc(sm.get_active_kernel(user_id))}</code>",
                 parse_mode="HTML",
             )
             return
 
         await update.message.reply_text(
-            "用法：<code>/kernel</code> | <code>/kernel ls</code> | "
-            "<code>/kernel new 名称</code> | <code>/kernel use 名称</code>",
+            "Usage: <code>/kernel</code> | <code>/kernel ls</code> | "
+            "<code>/kernel new name</code> | <code>/kernel use name</code>",
             parse_mode="HTML",
         )
 
@@ -1728,7 +1607,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             "",
         ]
         if h5ad_files:
-            lines.append(f"📊  <b>数据文件</b>  ({len(h5ad_files)})")
+            lines.append(f"📊  <b>Data Files</b>  ({len(h5ad_files)})")
             for f in h5ad_files[:10]:
                 try:
                     mb = f.stat().st_size / 1_048_576
@@ -1736,17 +1615,17 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 except OSError:
                     lines.append(f"  • <code>{_fmt.esc(f.name)}</code>")
             if len(h5ad_files) > 10:
-                lines.append(f"  <i>… 还有 {len(h5ad_files) - 10} 个</i>")
+                lines.append(f"  <i>… and {len(h5ad_files) - 10} more</i>")
         else:
-            lines.append("📊  <b>数据文件</b>  (空)")
+            lines.append("📊  <b>Data Files</b>  (empty)")
             lines.append(f"  <i>scp *.h5ad user@host:{ws}</i>")
 
         lines += [
             "",
             f"📋  AGENTS.md  {'✅' if agents_md else '—'}",
-            f"🧠  今日记忆  {'✅' if today_log.exists() else '—'}",
+            f"🧠  Today's Memory  {'✅' if today_log.exists() else '—'}",
             "",
-            "<code>/load &lt;文件名&gt;</code>  ·  <code>/ls</code>  ·  <code>/memory</code>",
+            "<code>/load &lt;filename&gt;</code>  ·  <code>/ls</code>  ·  <code>/memory</code>",
         ]
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -1779,7 +1658,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "用法：<code>/find &lt;模式&gt;</code>，例如 <code>/find *.h5ad</code>",
+                "Usage: <code>/find &lt;pattern&gt;</code>, for example <code>/find *.h5ad</code>",
                 parse_mode="HTML",
             )
             return
@@ -1801,15 +1680,15 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         args = context.args or []
         if not args:
             await update.message.reply_text(
-                "用法：<code>/load &lt;文件名&gt;</code>，例如 <code>/load pbmc3k.h5ad</code>\n"
-                "<code>/workspace</code> 查看可用文件。",
+                "Usage: <code>/load &lt;filename&gt;</code>, for example <code>/load pbmc3k.h5ad</code>\n"
+                "Use <code>/workspace</code> to inspect available files.",
                 parse_mode="HTML",
             )
             return
 
         filename = args[0]
         await update.message.reply_text(
-            f"⏳  加载 <code>{_fmt.esc(filename)}</code>…", parse_mode="HTML"
+            f"⏳  Loading <code>{_fmt.esc(filename)}</code>...", parse_mode="HTML"
         )
         try:
             adata = session.load_from_workspace(filename)
@@ -1823,14 +1702,14 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             hint = ""
             if h5ad_files:
                 names = "  ".join(f.name for f in h5ad_files[:5])
-                hint  = f"\n可用文件：<code>{_fmt.esc(names)}</code>"
+                hint  = f"\nAvailable files: <code>{_fmt.esc(names)}</code>"
             await update.message.reply_text(
-                f"❌  未找到 <code>{_fmt.esc(filename)}</code>{hint}", parse_mode="HTML"
+                f"❌  File not found: <code>{_fmt.esc(filename)}</code>{hint}", parse_mode="HTML"
             )
             return
 
         await update.message.reply_text(
-            f"✅  加载成功\n{_fmt._DIV}\n"
+            f"✅  Loaded successfully\n{_fmt._DIV}\n"
             f"🔬  <b>{adata.n_obs:,} cells × {adata.n_vars:,} genes</b>\n"
             f"📁  <code>{_fmt.esc(filename)}</code>",
             parse_mode="HTML",
@@ -1850,8 +1729,8 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         parts = raw.split(None, 1)
         if len(parts) < 2:
             await update.message.reply_text(
-                "用法：<code>/shell &lt;命令&gt;</code>\n"
-                "允许：<code>ls  find  cat  head  wc  file  du  pwd  tree</code>",
+                "Usage: <code>/shell &lt;command&gt;</code>\n"
+                "Allowed: <code>ls  find  cat  head  wc  file  du  pwd  tree</code>",
                 parse_mode="HTML",
             )
             return
@@ -1870,13 +1749,15 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
         if session is None:
             return
         text = session.get_recent_memory_text()
-        await _send_prose_locked(
-            context.bot,
-            update.effective_chat.id,
-            text,
-            header="🧠  <b>分析历史</b>（近两天）",
-            always_expand=True,
-        )
+        async with _chat_lock(update.effective_chat.id):
+            await _fmt.send_prose(
+                context.bot,
+                update.effective_chat.id,
+                text,
+                header="🧠  <b>Analysis History</b> (last two days)",
+                always_expand=True,
+                message_thread_id=getattr(update.effective_message, "message_thread_id", None),
+            )
 
     # ------------------------------------------------------------------
     # Document handler (.h5ad upload)
@@ -1890,10 +1771,13 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             return
         filename = doc.file_name or ""
         if not filename.endswith(".h5ad"):
-            await update.message.reply_text("⚠️  请发送 <code>.h5ad</code> 格式的文件。", parse_mode="HTML")
+            await update.message.reply_text(
+                "⚠️  Please upload a <code>.h5ad</code> file.",
+                parse_mode="HTML",
+            )
             return
 
-        await update.message.reply_text("⏳  正在下载并加载…")
+        await update.message.reply_text("⏳  Downloading and loading...")
         session = await _get_session(update)
         if session is None:
             return
@@ -1905,7 +1789,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
             session.adata = sc.read_h5ad(dest)
             a = session.adata
             await update.message.reply_text(
-                f"✅  加载成功\n{_fmt._DIV}\n"
+                f"✅  Loaded successfully\n{_fmt._DIV}\n"
                 f"🔬  <b>{a.n_obs:,} cells × {a.n_vars:,} genes</b>\n"
                 f"📁  <code>{_fmt.esc(filename)}</code>",
                 parse_mode="HTML",
@@ -1937,7 +1821,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
 
         if data == "jarvis:save":
             if session.adata is None:
-                await context.bot.send_message(chat_id=chat_id, text="❌  没有数据。")
+                await context.bot.send_message(chat_id=chat_id, text="❌  No dataset loaded.")
                 return
             path = session.save_adata()
             if path and path.exists():
@@ -1950,7 +1834,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                         caption=f"💾  {a.n_obs:,} cells × {a.n_vars:,} genes",
                     )
             else:
-                await context.bot.send_message(chat_id=chat_id, text="❌  保存失败。")
+                await context.bot.send_message(chat_id=chat_id, text="❌  Save failed.")
 
         elif data == "jarvis:status":
             if session.adata is not None:
@@ -1963,7 +1847,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                     chat_id=chat_id, text="\n".join(lines), parse_mode="HTML"
                 )
             else:
-                await context.bot.send_message(chat_id=chat_id, text="📭  暂无数据。")
+                await context.bot.send_message(chat_id=chat_id, text="📭  No dataset loaded.")
 
         elif data == "jarvis:memory":
             text = session.get_recent_memory_text()
@@ -1971,7 +1855,7 @@ def _register_handlers(app: Any, sm: Any, ac: AccessControl, verbose: bool) -> N
                 context.bot,
                 chat_id,
                 text,
-                header="🧠  <b>分析历史</b>",
+                header="🧠  <b>Analysis History</b>",
                 always_expand=True,
             )
 

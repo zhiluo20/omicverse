@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from ..agent_bridge import AgentBridge
 from ..channel_language import response_language_instruction, tr
+from ..channel_shared import render_help_text, render_start_text
 from ..gateway.routing import GatewaySessionRegistry, SessionKey
 from ..model_help import render_model_help
 
@@ -177,7 +178,7 @@ async def _probe_rpc_support(cli_path: str, timeout: float) -> None:
     resolved_cli = _resolve_cli_path(cli_path)
     if resolved_cli is None:
         raise RuntimeError(
-            f"无法找到 imsg 可执行文件（当前路径: {cli_path}）。"
+            f"Could not find the imsg executable (current path: {cli_path})."
         )
 
     try:
@@ -190,7 +191,7 @@ async def _probe_rpc_support(cli_path: str, timeout: float) -> None:
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
-            f"无法启动 imsg。请先安装它，例如：brew install steipete/tap/imsg（当前路径: {cli_path}）"
+            f"Could not start imsg. Install it first, for example with: brew install steipete/tap/imsg (current path: {cli_path})"
         ) from exc
 
     try:
@@ -198,7 +199,7 @@ async def _probe_rpc_support(cli_path: str, timeout: float) -> None:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.communicate()
-        raise RuntimeError("imsg rpc --help 超时，无法确认当前 imsg 是否支持 rpc 子命令。")
+        raise RuntimeError("Timed out while running `imsg rpc --help`; could not verify whether this imsg build supports the `rpc` subcommand.")
 
     combined = "\n".join(
         part.decode("utf-8", errors="ignore").strip()
@@ -207,7 +208,7 @@ async def _probe_rpc_support(cli_path: str, timeout: float) -> None:
     ).strip()
     normalized = combined.lower()
     if "unknown command" in normalized and "rpc" in normalized:
-        raise RuntimeError('当前 imsg 不支持 "rpc" 子命令，请先升级 imsg。')
+        raise RuntimeError('The current imsg build does not support the "rpc" subcommand. Upgrade imsg first.')
     if proc.returncode not in (0, None):
         raise RuntimeError(
             combined or f"imsg rpc --help failed (code {proc.returncode})"
@@ -262,7 +263,7 @@ class IMessageRpcClient:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"无法启动 imsg。请先安装它，例如：brew install steipete/tap/imsg（当前路径: {self._cli_path}）"
+                f"Could not start imsg. Install it first, for example with: brew install steipete/tap/imsg (current path: {self._cli_path})"
             ) from exc
         self._stdout_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
@@ -593,55 +594,11 @@ class IMessageJarvisBot:
         route = session_key.as_key()
 
         if cmd == "/start":
-            await self._send_text(
-                target,
-                "OmicVerse Jarvis\n"
-                "----------------\n"
-                "Quick Start:\n"
-                "Send a natural-language request to start an analysis.\n"
-                "Use /load <filename> to work with a .h5ad file already in the workspace.\n\n"
-                "Data Commands:\n"
-                "/workspace Show the workspace\n"
-                "/ls [path] List files\n"
-                "/find <pattern> Search files\n"
-                "/load <filename> Load data\n"
-                "/shell <command> Run a whitelisted shell command\n\n"
-                "Session Commands:\n"
-                "/kernel | /kernel ls | /kernel new <name> | /kernel use <name>\n"
-                "/memory Analysis history\n"
-                "/usage Token usage\n"
-                "/model [name] Show or switch model\n"
-                "/status Current status\n"
-                "/save Export current.h5ad\n"
-                "/cancel Cancel analysis\n"
-                "/reset Reset the session",
-            )
+            await self._send_text(target, render_start_text(text))
             return
 
         if cmd == "/help":
-            await self._send_text(
-                target,
-                "OmicVerse Jarvis\n"
-                "----------------\n"
-                "Quick Start:\n"
-                "Send a natural-language request to start an analysis.\n"
-                "Use /load <filename> to work with a .h5ad file already in the workspace.\n\n"
-                "Data Commands:\n"
-                "/workspace Show the workspace\n"
-                "/ls [path] List files\n"
-                "/find <pattern> Search files\n"
-                "/load <filename> Load data\n"
-                "/shell <command> Run a whitelisted shell command\n\n"
-                "Session Commands:\n"
-                "/kernel | /kernel ls | /kernel new <name> | /kernel use <name>\n"
-                "/memory Analysis history\n"
-                "/usage Token usage\n"
-                "/model [name] Show or switch model\n"
-                "/status Current status\n"
-                "/save Export current.h5ad\n"
-                "/cancel Cancel analysis\n"
-                "/reset Reset the session",
-            )
+            await self._send_text(target, render_help_text(text))
             return
 
         if cmd == "/cancel":
